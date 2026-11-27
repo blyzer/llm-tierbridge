@@ -419,27 +419,29 @@ MIT, ver `LICENSE` (copyright 2026 blyzer). Las fuentes de datos de terceros de 
 ## Rebanada 6: `tierbridge export cpa-router` y el plugin `cpa-tierbridge`
 
 Un alias de modelo, `tierbridge/auto`, que CLIProxyAPI resuelve por ranking: el primer candidato gratuito (o el más
-barato) que cabe en la petición. Son dos piezas: un comando que calcula el ranking y un plugin nativo de
-CLIProxyAPI que lo aplica (`plugins/cpa-tierbridge/`, en Go; su README tiene el detalle de configuración).
+barato) que cabe en la petición, con reintento por el siguiente si falla. Son dos piezas: un comando que calcula el
+ranking y un plugin nativo de CLIProxyAPI que lo aplica (`plugins/cpa-tierbridge/`, en Go; su README tiene el
+detalle de configuración).
 
 ### `tierbridge export cpa-router`
 
 ```sh
 tierbridge export cpa-router \
   --catalog out/catalog.json --gateway omp-live:easycliproxy \
-  --name tierbridge-omp-live-easycliproxy --alias-prefix tb- \
-  --alias tierbridge/auto --profile free-first \
+  --model-prefix '' --alias tierbridge/auto --profile free-first \
   --freellmapi-observations out/observations.freellmapi.jsonl \
   --out tierbridge-router.json     # 0600
 ```
 
-Escribe `tierbridge-router.json` (esquema `tierbridge-router/1`): la lista ordenada de candidatos de un alias.
+Escribe `tierbridge-router.json` con esquema **`tierbridge-router/2`** (`target: "host"`, `modelPrefix`, sin
+proveedor): la lista ordenada de candidatos de un alias. El modo antiguo con proveedor y el esquema `/1` se
+eliminaron; el plugin rechaza un `/1` con un error claro.
 
-- **Mismos `--name` y `--alias-prefix` que `export cpa`.** Los candidatos son las filas de **una** pasarela, la que
-  `export cpa` vuelca en CLIProxyAPI: `candidate.model` es el alias que `export cpa` registra (`--alias-prefix`, por
-  defecto `tb-`, más el id) y `candidate.provider` es la clave de proveedor que CLIProxyAPI deriva de `--name`
-  (`openai-compatible-<name en minúsculas>`; por defecto `tierbridge-<pasarela>`). Si no coinciden, el plugin
-  enruta a un modelo que el proveedor no conoce.
+- **`target: host` y `--model-prefix`.** El CPA que ejecuta el plugin resuelve cada `candidate.model` por su cuenta
+  (con su propio enrutado y rotación de credenciales), así que los candidatos no llevan proveedor. `candidate.model` es
+  `--model-prefix` más el id del modelo. En el CPA vivo, que lista los ids tal cual, el prefijo va vacío (el valor por
+  defecto); en una instancia aparte configurada con `export cpa --alias-prefix tb-` hay que usar `--model-prefix tb-`.
+  Ya no existen `--name` ni `--alias-prefix` en este comando.
 - **`--freellmapi-observations`, y por qué.** El `catalog.json` fusionado no lleva `raw`, así que los límites del
   nivel gratuito (`rpm`, `rpd`, `tpm`, `tpd`) no están en él: salen de `observations.freellmapi.jsonl`
   (`catalog build --source freellmapi`). Sin esa opción todo `quota` es `null` (ilimitado) y se avisa por stderr;
@@ -450,66 +452,87 @@ Escribe `tierbridge-router.json` (esquema `tierbridge-router/1`): la lista orden
   incompleto cuenta como desconocido: el plugin nunca multiplica por un precio ausente.
 - **Exclusiones** (resumen por stderr y en `skipped`): `kind` conocido distinto de `chat` (`not-chat`), `lifecycle`
   `retired` (`retired`), filas cuyos límites son solo marcadores de posición de la pasarela
-  (`placeholder-limits`) y alias repetidos (`duplicate-alias`; gana la primera fila por clave, como en `export cpa`).
-- Salida determinista y sin marcas de tiempo; `--out` crea el fichero con modo 0600.
+  (`placeholder-limits`) y alias repetidos (`duplicate-alias`).
+- Salida determinista y sin marcas de tiempo; `--out` crea el fichero con modo 0600. El fichero del CPA vivo se
+  genera en local, en una ruta ignorada por git, y no se publica. Con el catálogo y las observaciones de la sesión
+  salieron 1 245 candidatos (124 gratuitos, 770 de coste conocido, 351 desconocidos) de 1 697 filas de la pasarela
+  (36 `retired` y 416 `placeholder-limits` excluidas), 129 con cuota de freellmapi, y todos servidos por el
+  `GET /v1/models` del CPA vivo.
 
-### El plugin
+### El plugin: su propio ejecutor
 
-- **`ModelRouter` solo para el alias.** Atiende `tierbridge/auto` (clave `alias`) y nada más: cualquier otro modelo
-  vuelve con `Handled:false` y la cadena sigue como si el plugin no existiera. Si ningún candidato cabe, o hay
-  cualquier error del plugin (también un `panic`, que se captura), responde `Handled:false`: el host trata entonces
-  el alias como un modelo desconocido y contesta `400 model_not_found`. Un candidato cabe si su ventana de
-  contexto admite el prompt estimado (bytes de texto / 4), soporta herramientas e imágenes si la petición las usa,
-  su proveedor tiene credenciales en el host, no está en enfriamiento, el gasto estimado cabe en el presupuesto
-  diario (los gratuitos nunca se saltan por presupuesto) y le quedan `rpm`/`rpd`/`tpm`/`tpd`.
-- **`UsagePlugin`: contabilidad.** Con los registros de uso del host cuenta tokens (`tpm` en ventana deslizante de
-  60 s, `tpd` por día UTC), gasto diario (`daily-budget-usd`; precio desconocido cuenta 0 y se lista como
-  `unpriced`) y pone en enfriamiento (`cooldown-seconds`, o un `Retry-After` mayor) al modelo cuyo registro sea
-  `Failed` con 429 o >= 500. El estado se guarda de forma atómica en `state-path` (JSON, modo 0600) en el plazo de ~1 s tras un
-  cambio y, de forma síncrona, en `plugin.quiesce`, `plugin.shutdown` y el gancho C de apagado; que el host invoque
-  ese gancho al recibir SIGTERM no está verificado hasta repetir la prueba de aceptación.
+**Por qué.** El CPA vivo no tiene proveedor `openai-compatibility` y la mayoría de sus modelos los sirven otros
+plugins. Un `ModelRouter` solo puede nombrar proveedor y modelo, y no llega a esos modelos; por eso el plugin es
+además su propio **ejecutor**.
+
+- **`ModelRouter` solo para el alias.** Responde `TargetKind=self` para `tierbridge/auto` (clave `alias`) y
+  `Handled:false` para cualquier otro modelo: la cadena sigue como si el plugin no existiera. Si ningún candidato
+  cabe, o hay un error interno (también un `panic`, que se captura en cada entrada), responde `Handled:false` y el
+  host contesta lo normal para un alias sin enrutar: `400 model_not_found`; el tráfico que no es del alias no se altera.
+- **Ejecutor.** El host lo llama para el alias; el ejecutor recorre los candidatos por orden de ranking y los ejecuta
+  a través del host **por nombre de modelo** (`host.model.execute`, y `host.model.execute_stream` en *streaming*),
+  sin recursión: el alias nunca se ejecuta a sí mismo. Un candidato cabe si su ventana de contexto admite el
+  prompt estimado (bytes de texto / 4), soporta herramientas e imágenes si la petición las usa, no está en
+  enfriamiento, el gasto estimado cabe en el presupuesto diario (los gratuitos nunca se saltan por presupuesto) y
+  le quedan `rpm`/`rpd`/`tpm`/`tpd`.
+- **Fallback dentro de la petición.** El **host** sigue sin re-enrutar cuando falla el modelo elegido (pregunta al
+  router una vez por petición), así que el reintento lo hace el ejecutor del plugin. Sin *streaming*: 429, 5xx,
+  fallo de transporte o tiempo agotado, 401/402/403/404/408/425 y `model_not_found` (400/404) ponen al candidato
+  en enfriamiento y pasan al siguiente; cualquier otro 4xx se devuelve al cliente tal cual. Con *streaming*: un
+  estado de arranque >= 400 o un error antes del primer fragmento pasan al siguiente; **después del primer
+  fragmento no hay fallback**. `max-attempts` (3) limita los intentos y `deadline-seconds` (120) el tiempo; en
+  *streaming* solo cubre la espera del primer fragmento. Si todos fallan, se devuelve el último error del upstream.
+  Un candidato que falló se evita además en las peticiones siguientes por el enfriamiento (`cooldown-seconds`, o un
+  `Retry-After` mayor).
+- **`UsagePlugin`: contabilidad.** Los registros de uso de las ejecuciones internas llevan `Model` = id del
+  upstream y `Alias` = nombre del candidato. Con ellos cuenta tokens (`tpm` en ventana deslizante de 60 s, `tpd`
+  por día UTC), gasto diario (`daily-budget-usd`; precio desconocido cuenta 0 y se lista como `unpriced`) y el
+  enfriamiento de un registro `Failed` con 429 o >= 500. El estado se guarda de forma atómica en `state-path`
+  (JSON, modo 0600) en el plazo de ~1 s tras un cambio y, de forma síncrona, en `plugin.quiesce`, `plugin.shutdown`
+  y el gancho C de apagado; con SIGTERM el fichero quedó igual al estado vivo, sin saber qué ruta lo volcó.
 - **Rutas de gestión autenticadas**, solo lectura: `/tierbridge/status`, `/candidates`, `/counters`, `/budget` y
-  `/decisions?limit=N` (bajo el prefijo de gestión del host, p. ej. `/v0/management/tierbridge/status`). No hay
-  `QuotaProvider`: la API de cuotas del host es **por credencial** (`auth_index`), y aquí el límite, el
-  enfriamiento y el presupuesto son **por modelo**; por eso se exponen como JSON de gestión.
+  `/decisions?limit=N` (bajo el prefijo de gestión del host, p. ej. `/v0/management/tierbridge/status`); cada
+  decisión incluye sus intentos. **No hay `QuotaProvider`**: la API de cuotas del host es por credencial
+  (`auth_index`) y aquí el límite, el enfriamiento y el presupuesto son por modelo, así que se exponen como JSON.
+- `count_tokens` y `http_request` responden `not_implemented` (501).
 
-### Despliegue recomendado
+### Despliegue
 
-- **Fijar CLIProxyAPI 8.1.7** (`47f18e4d`, ABI nativa 1, esquema RPC 10): la ABI y el esquema cambian a menudo; hay
-  que reconstruir y reverificar el plugin con cada versión del host.
-- **`plugins.configs.tierbridge.priority` explícito.** Los 32 plugins del host vivo están en prioridad 0 y sin ella
-  en su configuración; el orden de la cadena es prioridad descendente y luego id ascendente, es decir, alfabético.
-  Nuestro router solo contesta al alias, así que no toca el resto del tráfico; fijarla evita depender del orden
-  alfabético frente a otros `ModelRouter`.
-- **Un `panic` inutiliza el plugin** (el host lo «funde» hasta reiniciar): por eso el plugin captura los `panic`
-  en cada entrada (ruteo, uso, gestión y la frontera cgo).
+- **Fijar CLIProxyAPI 8.1.7** (`47f18e4d`, ABI nativa 1, esquema RPC 10): hay que reconstruir y reverificar el plugin
+  con cada versión del host.
+- **`plugins.configs.tierbridge.priority` explícito.** Los 32 plugins del host vivo están en prioridad 0; la cadena
+  se ordena por prioridad descendente y luego id ascendente. El router solo contesta al alias, así que no toca el
+  resto del tráfico. Un `panic` inutiliza el plugin hasta reiniciar, de ahí el `recover` en cada entrada.
+- **`scripts/deploy-live.sh` y `scripts/rollback-live.sh` están preparados y NUNCA se han ejecutado contra el CPA
+  vivo** (solo contra un directorio de mentira, `test-deploy.sh --self-test`): hacen copia de `config.yaml`, copian
+  el dylib e imprimen el bloque YAML; no editan la configuración ni reinician nada (ver
+  `plugins/cpa-tierbridge/scripts/README-deploy.md`).
 
 ### Lo observado en una instancia aparte (8.1.7, reales)
 
 Prueba de aceptación en una instancia desechable en `127.0.0.1:18417`
-(`plugins/cpa-tierbridge/scripts/scratch-acceptance.sh`): 3 candidatos gratuitos reales sobre el upstream de
-`127.0.0.1:8317`, 8 de 10 peticiones de chat usadas:
+(`plugins/cpa-tierbridge/scripts/scratch-acceptance.sh`), con candidatos gratuitos reales sobre el upstream de
+`127.0.0.1:8317` (8 de 12 peticiones usadas en la última corrida):
 
-- El host **pregunta al router una vez por petición** y ejecuta contra el `{proveedor, modelo}` fijado. **No vuelve a
-  preguntar ni cae a otro candidato** si el modelo falla: un id inexistente da `503 auth_not_found`, y un `429` del
-  upstream llega tal cual al cliente. Un candidato que falla solo se evita en la **petición siguiente**, vía
-  enfriamiento (registro de uso `Failed` 429/>= 500, `cooldown-seconds`, `Retry-After`).
-- El registro de uso de una petición enrutada lleva el **id del upstream sin el prefijo `tb-`** (no el alias ni
-  `tb-…`). El plugin asocia por `Model`, luego `Alias`, y luego id del upstream más proveedor, y conserva los
-  últimos registros vistos en `lastUsageModels` del estado.
-- Con `debug-force-error` el `panic` se traga y el alias da `400 model_not_found` con el host vivo; el tráfico que
-  no es del alias no se altera. La petición al alias sigue al candidato superior que cabe, y una segunda petición
-  salta al candidato con `quota.rpm: 1` ya gastado.
-- El host **no registra una línea de capacidades** y `/v0/management/plugins` no muestra ninguna (solo
-  `supports_oauth` y `supports_quota`).
+- El alias lo sirve el ejecutor; la segunda petición salta al candidato con `quota.rpm: 1` ya gastado.
+- **Fallback en una sola llamada del cliente:** con un modelo inexistente en primer lugar, o con un `429` del
+  upstream, el cliente recibe `200` del siguiente candidato; en la petición siguiente el candidato fallido se salta
+  por enfriamiento (con el `Retry-After` del upstream). Un candidato desconocido para el host hizo fallar la petición
+  entera en la primera versión del ejecutor y se corrigió.
+- *Streaming*: `stream:true` al alias devuelve `200` con los fragmentos SSE y `[DONE]` del segundo candidato.
+- Con `debug-force-error` el alias da `400 model_not_found` con el host vivo, y el tráfico que no es del alias sigue
+  respondiendo.
+- El registro de uso de una ejecución interna lleva el id del upstream sin prefijo `tb-` en `Model` y el nombre del
+  candidato en `Alias`; el plugin lo asocia y lo conserva en `lastUsageModels`.
+- Las cinco rutas de gestión dan 200 con el secreto y 401 sin él; el estado sobrevive a un SIGTERM.
+- El host **no registra una línea de capacidades** y `/v0/management/plugins` no muestra ninguna.
 
 ### Lo que NO está verificado
 
-- Un despliegue en la instancia viva, la recarga en caliente, el comportamiento ante fallos en *streaming*, y otras
-  plataformas distintas de macOS/arm64.
-- Las rutas de gestión, `lastUsageModels` y el enfriamiento extremo a extremo en el host: esa corrida se hizo con el
-  plugin de la primera entrega (sin contabilidad ni gestión; las cinco rutas daban 404 con el secreto y 401 sin él).
-  Queda repetirla con la versión actual (`REQUIRE_MGMT=1`); las rutas están cubiertas por pruebas unitarias.
-- Las cadenas de los registros de uso más allá de lo que mostró esa corrida (modelo del upstream sin `tb-`).
-
-**Fase 2 (opcional, no implementada):** un `Scheduler` que solo filtre credenciales.
+- Ejecutar el plugin en la instancia viva, y la interacción con las cadenas de los otros 31 plugins vivos (la
+  elección de `priority`).
+- Una desconexión del cliente a mitad de un *stream* mientras la lectura interna está bloqueada (se nota en el
+  fragmento siguiente); el plazo (`deadline-seconds`) solo cubre el primer fragmento; `count_tokens`; la recarga en
+  caliente.
+- El presupuesto con candidatos de precio conocido y los límites `rpd`/`tpd` en un host real (los candidatos de la
+  prueba eran gratuitos y solo con `rpm`), y plataformas distintas de macOS/arm64.
