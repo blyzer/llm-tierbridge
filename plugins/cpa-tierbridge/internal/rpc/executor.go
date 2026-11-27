@@ -60,6 +60,27 @@ func fallbackStatus(status int) bool {
 	return status >= 500
 }
 
+// modelNotFound reports a reply that says the host does not serve the candidate model: HTTP 400 or 404
+// whose error code (JSON error.code) is model_not_found, or whose body or message says so ("unknown
+// provider for model ..." is what the host answers for a model no credential serves). Such a failure
+// blames the candidate, not the request, so it is followed by the next candidate; any other 400 stays
+// request-scoped.
+func modelNotFound(res attemptResult) bool {
+	if res.status != http.StatusBadRequest && res.status != http.StatusNotFound {
+		return false
+	}
+	var doc struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(res.body), &doc) == nil && strings.EqualFold(doc.Error.Code, "model_not_found") {
+		return true
+	}
+	text := strings.ToLower(string(res.body) + " " + res.err)
+	return strings.Contains(text, "model_not_found") || strings.Contains(text, "unknown provider for model")
+}
+
 // attemptResult is what one host.model.execute call produced.
 type attemptResult struct {
 	// Streaming attempts only: the inner stream, its first output chunk and whether it already ended.
@@ -333,8 +354,13 @@ func (h *Handler) run(request []byte, stream bool) []byte {
 			d.Attempts = append(d.Attempts, at)
 			deadlineHit = true
 		default:
-			at.CoolingDown = h.acct.Cool(c, res.status, res.headers, h.now())
-			at.Fallback = fallbackStatus(res.status)
+			if modelNotFound(res) {
+				at.Reason, at.Fallback = "model_not_found", true
+				at.CoolingDown = h.acct.CoolModel(c, h.now())
+			} else {
+				at.CoolingDown = h.acct.Cool(c, res.status, res.headers, h.now())
+				at.Fallback = fallbackStatus(res.status)
+			}
 			d.Attempts = append(d.Attempts, at)
 			if !at.Fallback {
 				return fail(res.status, wire.ErrorCodeRequestScoped, fmt.Sprintf("%s answered %s", c.Model, res.err), 0)
@@ -356,6 +382,9 @@ func (h *Handler) run(request []byte, stream bool) []byte {
 	status := last.status
 	if status == 0 {
 		status = http.StatusBadGateway
+	}
+	if modelNotFound(last) {
+		status = http.StatusServiceUnavailable // no candidate is served: not the client's 400
 	}
 	msg := fmt.Sprintf("%d attempt(s) failed; last: %s: %s", tried, lastModel, last.err)
 	if tried >= cfg.MaxAttempts {

@@ -236,6 +236,58 @@ func TestExecute400IsReturnedWithoutFallback(t *testing.T) {
 	}
 }
 
+const notFoundBody = `{"error":{"message":"unknown provider for model tb-a","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
+
+func TestExecuteModelNotFoundFallsBackAndCoolsTheCandidate(t *testing.T) {
+	for name, reply := range map[string][]byte{
+		"json error code":      hostOK(400, notFoundBody, nil),
+		"404 with the code":    hostOK(404, notFoundBody, nil),
+		"message only":         hostOK(400, "unknown provider for model tb-a", nil),
+		"host error envelope":  hostFail(400, "unknown provider for model tb-a"),
+		"upper case code only": hostOK(400, `{"error":{"code":"MODEL_NOT_FOUND"}}`, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fh := &fakeHost{handle: byModel(map[string][]byte{"tb-a": reply})}
+			h := newExecutor(t, wrap(abc), "", fh)
+			env, resp := execute(t, h, chatBody(10, ""))
+			if !env.OK || string(resp.Payload) != `{"from":"tb-b"}` || strings.Join(fh.models(), ",") != "tb-a,tb-b" {
+				t.Fatalf("execute = %+v / %s, host saw %v", env.Error, resp.Payload, fh.models())
+			}
+			if a := h.Status().Decisions[0].Attempts[0]; a.Reason != "model_not_found" || !a.Fallback || !a.CoolingDown || a.Status < 400 {
+				t.Errorf("attempt = %+v", a)
+			}
+			execute(t, h, chatBody(10, ""))
+			if got := strings.Join(fh.models(), ","); got != "tb-a,tb-b,tb-b" {
+				t.Errorf("the unserved candidate must be skipped on the next request, host saw %s", got)
+			}
+			if d := lastDecision(t, h); strings.Join(d.Skips, ",") != "tb-a:cooldown" {
+				t.Errorf("skips = %v", d.Skips)
+			}
+		})
+	}
+}
+
+func TestExecutePlainValidation400StaysRequestScoped(t *testing.T) {
+	body := `{"error":{"message":"messages: field required","type":"invalid_request_error","code":"invalid_value","param":"messages"}}`
+	fh := &fakeHost{handle: byModel(map[string][]byte{"tb-a": hostOK(400, body, nil)})}
+	h := newExecutor(t, wrap(abc), "", fh)
+	env, _ := execute(t, h, chatBody(10, ""))
+	if env.OK || env.Error.HTTPStatus != 400 || env.Error.Code != wire.ErrorCodeRequestScoped || strings.Join(fh.models(), ",") != "tb-a" {
+		t.Fatalf("execute = %+v, host saw %v", env.Error, fh.models())
+	}
+	if a := h.Status().Decisions[0].Attempts[0]; a.Reason != "" || a.Fallback || a.CoolingDown {
+		t.Errorf("attempt = %+v", a)
+	}
+}
+
+func TestExecuteAllModelsUnservedIsA503NotTheClients400(t *testing.T) {
+	fh := &fakeHost{handle: func(wire.HostModelRequest) []byte { return hostOK(400, notFoundBody, nil) }}
+	h := newExecutor(t, wrap(abc), "", fh)
+	if env, _ := execute(t, h, chatBody(10, "")); env.OK || env.Error.HTTPStatus != 503 || len(fh.models()) != 3 {
+		t.Errorf("execute = %+v after %d calls", env.Error, len(fh.models()))
+	}
+}
+
 func TestExecuteAllFailReturnsTheLastErrorWithItsStatus(t *testing.T) {
 	fh := &fakeHost{handle: byModel(map[string][]byte{
 		"tb-a": hostOK(503, `down`, nil),

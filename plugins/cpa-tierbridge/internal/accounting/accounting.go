@@ -271,6 +271,24 @@ func (a *Accountant) Cool(c routerfile.Candidate, status int, headers map[string
 	return cooled
 }
 
+// CoolModel puts c on cooldown for the configured length whatever the failure was: for a candidate the
+// host does not serve at all (model_not_found), which no status code of the usage record would cool.
+// It reports whether the candidate now cools down (false when cooldown-seconds is 0).
+func (a *Accountant) CoolModel(c routerfile.Candidate, now time.Time) bool {
+	a.mu.Lock()
+	m := a.stateLocked(c.Model)
+	cooled := false
+	if until := now.Add(a.cooldown); a.cooldown > 0 && until.After(m.cooldownUntil) {
+		m.cooldownUntil = until
+		cooled = true
+	}
+	a.mu.Unlock()
+	if cooled {
+		a.notify()
+	}
+	return cooled
+}
+
 // RetryAfter reads the Retry-After header (seconds or an HTTP date, any header-name case), bounded by
 // MaxRetryAfter. It returns 0 when the header is absent or unusable.
 func RetryAfter(headers map[string][]string, now time.Time) time.Duration {

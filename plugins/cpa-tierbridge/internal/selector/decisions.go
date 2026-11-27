@@ -38,6 +38,9 @@ type Attempt struct {
 	OK bool `json:"ok"`
 	// Error is a short description of the failure ("" for a success).
 	Error string `json:"error,omitempty"`
+	// Reason names why the candidate failed when the status alone does not say: "model_not_found" is
+	// a candidate the host does not serve (a stale router file), cooled for cooldown-seconds.
+	Reason string `json:"reason,omitempty"`
 	// Fallback tells whether the executor moved on to the next candidate after this attempt.
 	Fallback bool `json:"fallback,omitempty"`
 	// CoolingDown tells whether the failure put the candidate on cooldown.

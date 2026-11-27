@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,7 @@ type scriptChunk struct{ payload, err string }
 // otherwise the chunks are served by host.model.stream_read in order and the stream ends after them.
 type streamScript struct {
 	startStatus int
+	startMsg    string // host_call_failed message of a failed start (default "start failed")
 	chunks      []scriptChunk
 }
 
@@ -54,7 +56,7 @@ func (f *fakeStreamHost) Call(method string, request []byte) ([]byte, error) {
 		f.started = append(f.started, req.Model)
 		sc := f.scripts[req.Model]
 		if sc.startStatus >= 400 {
-			return hostFail(sc.startStatus, "start failed"), nil
+			return hostFail(sc.startStatus, cmp.Or(sc.startMsg, "start failed")), nil
 		}
 		f.n++
 		id := fmt.Sprintf("in-%d", f.n)
@@ -254,6 +256,34 @@ func TestStreamAllCandidatesFailBeforeOutput(t *testing.T) {
 	// A stream request without the host's stream id is refused, not guessed.
 	if env := decode(t, h.Handle(wire.MethodExecutorStream, streamRequest(t, chatBody(5, ""), "")), nil); env.OK || env.Error.HTTPStatus != 400 {
 		t.Errorf("missing stream_id = %+v", env.Error)
+	}
+}
+
+func TestStreamStartModelNotFoundFallsBackButOtherBadRequestsDoNot(t *testing.T) {
+	sh := newStreamHost(map[string]streamScript{
+		"tb-a": {startStatus: 400, startMsg: "unknown provider for model tb-a"},
+		"tb-b": {chunks: []scriptChunk{{payload: "ok"}}},
+	})
+	h := newStreamer(t, sh, "")
+	if env := startStream(t, h, "out-1"); !env.OK {
+		t.Fatalf("execute_stream: %+v", env.Error)
+	}
+	sh.settled(t, 1, 1)
+	if started, _, emitted, _ := sh.snap(); strings.Join(started, ",") != "tb-a,tb-b" || strings.Join(emitted, ",") != "ok" {
+		t.Errorf("started %v emitted %v", started, emitted)
+	}
+	if a := h.Status().Decisions[0].Attempts[0]; a.Reason != "model_not_found" || !a.Fallback || !a.CoolingDown || a.Status != 400 {
+		t.Errorf("attempt = %+v", a)
+	}
+
+	plain := newStreamHost(map[string]streamScript{"tb-a": {startStatus: 400, startMsg: "invalid_request_error: messages is required"}})
+	h2 := newStreamer(t, plain, "")
+	env := startStream(t, h2, "out-1")
+	if env.OK || env.Error.HTTPStatus != 400 || env.Error.Code != wire.ErrorCodeRequestScoped {
+		t.Fatalf("plain 400 = %+v", env.Error)
+	}
+	if started, _, _, _ := plain.snap(); strings.Join(started, ",") != "tb-a" {
+		t.Errorf("a plain 400 must not fall back, started %v", started)
 	}
 }
 
