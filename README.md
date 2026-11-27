@@ -415,3 +415,100 @@ muestras sintéticas de ≤40 filas y ids públicos en `crates/catalog/tests/fix
 ## Licencia
 
 MIT, ver `LICENSE` (copyright 2026 blyzer). Las fuentes de datos de terceros de los fixtures de prueba y sus licencias están en `NOTICE`.
+
+## Rebanada 6: `tierbridge export cpa-router` y el plugin `cpa-tierbridge`
+
+Un alias de modelo, `tierbridge/auto`, que CLIProxyAPI resuelve por ranking: el primer candidato gratuito (o el más
+barato) que cabe en la petición. Son dos piezas: un comando que calcula el ranking y un plugin nativo de
+CLIProxyAPI que lo aplica (`plugins/cpa-tierbridge/`, en Go; su README tiene el detalle de configuración).
+
+### `tierbridge export cpa-router`
+
+```sh
+tierbridge export cpa-router \
+  --catalog out/catalog.json --gateway omp-live:easycliproxy \
+  --name tierbridge-omp-live-easycliproxy --alias-prefix tb- \
+  --alias tierbridge/auto --profile free-first \
+  --freellmapi-observations out/observations.freellmapi.jsonl \
+  --out tierbridge-router.json     # 0600
+```
+
+Escribe `tierbridge-router.json` (esquema `tierbridge-router/1`): la lista ordenada de candidatos de un alias.
+
+- **Mismos `--name` y `--alias-prefix` que `export cpa`.** Los candidatos son las filas de **una** pasarela, la que
+  `export cpa` vuelca en CLIProxyAPI: `candidate.model` es el alias que `export cpa` registra (`--alias-prefix`, por
+  defecto `tb-`, más el id) y `candidate.provider` es la clave de proveedor que CLIProxyAPI deriva de `--name`
+  (`openai-compatible-<name en minúsculas>`; por defecto `tierbridge-<pasarela>`). Si no coinciden, el plugin
+  enruta a un modelo que el proveedor no conoce.
+- **`--freellmapi-observations`, y por qué.** El `catalog.json` fusionado no lleva `raw`, así que los límites del
+  nivel gratuito (`rpm`, `rpd`, `tpm`, `tpd`) no están en él: salen de `observations.freellmapi.jsonl`
+  (`catalog build --source freellmapi`). Sin esa opción todo `quota` es `null` (ilimitado) y se avisa por stderr;
+  con ella se informa cuántos candidatos cruzaron con una observación.
+- **Perfil `free-first`** (el único hoy): gratuitos conocidos primero; luego coste conocido ascendente
+  (`input + output`, USD por millón de tokens); luego coste desconocido. Los empates se rompen por confianza de la
+  evidencia, ventana de contexto descendente (`null` al final), `id` y clave del catálogo. Un coste «conocido» pero
+  incompleto cuenta como desconocido: el plugin nunca multiplica por un precio ausente.
+- **Exclusiones** (resumen por stderr y en `skipped`): `kind` conocido distinto de `chat` (`not-chat`), `lifecycle`
+  `retired` (`retired`), filas cuyos límites son solo marcadores de posición de la pasarela
+  (`placeholder-limits`) y alias repetidos (`duplicate-alias`; gana la primera fila por clave, como en `export cpa`).
+- Salida determinista y sin marcas de tiempo; `--out` crea el fichero con modo 0600.
+
+### El plugin
+
+- **`ModelRouter` solo para el alias.** Atiende `tierbridge/auto` (clave `alias`) y nada más: cualquier otro modelo
+  vuelve con `Handled:false` y la cadena sigue como si el plugin no existiera. Si ningún candidato cabe, o hay
+  cualquier error del plugin (también un `panic`, que se captura), responde `Handled:false`: el host trata entonces
+  el alias como un modelo desconocido y contesta `400 model_not_found`. Un candidato cabe si su ventana de
+  contexto admite el prompt estimado (bytes de texto / 4), soporta herramientas e imágenes si la petición las usa,
+  su proveedor tiene credenciales en el host, no está en enfriamiento, el gasto estimado cabe en el presupuesto
+  diario (los gratuitos nunca se saltan por presupuesto) y le quedan `rpm`/`rpd`/`tpm`/`tpd`.
+- **`UsagePlugin`: contabilidad.** Con los registros de uso del host cuenta tokens (`tpm` en ventana deslizante de
+  60 s, `tpd` por día UTC), gasto diario (`daily-budget-usd`; precio desconocido cuenta 0 y se lista como
+  `unpriced`) y pone en enfriamiento (`cooldown-seconds`, o un `Retry-After` mayor) al modelo cuyo registro sea
+  `Failed` con 429 o >= 500. El estado se guarda de forma atómica en `state-path` (JSON, modo 0600, como mucho cada
+  5 s y al apagar).
+- **Rutas de gestión autenticadas**, solo lectura: `/tierbridge/status`, `/candidates`, `/counters`, `/budget` y
+  `/decisions?limit=N` (bajo el prefijo de gestión del host, p. ej. `/v0/management/tierbridge/status`). No hay
+  `QuotaProvider`: la API de cuotas del host es **por credencial** (`auth_index`), y aquí el límite, el
+  enfriamiento y el presupuesto son **por modelo**; por eso se exponen como JSON de gestión.
+
+### Despliegue recomendado
+
+- **Fijar CLIProxyAPI 8.1.7** (`47f18e4d`, ABI nativa 1, esquema RPC 10): la ABI y el esquema cambian a menudo; hay
+  que reconstruir y reverificar el plugin con cada versión del host.
+- **`plugins.configs.tierbridge.priority` explícito.** Los 32 plugins del host vivo están en prioridad 0 y sin ella
+  en su configuración; el orden de la cadena es prioridad descendente y luego id ascendente, es decir, alfabético.
+  Nuestro router solo contesta al alias, así que no toca el resto del tráfico; fijarla evita depender del orden
+  alfabético frente a otros `ModelRouter`.
+- **Un `panic` inutiliza el plugin** (el host lo «funde» hasta reiniciar): por eso el plugin captura los `panic`
+  en cada entrada (ruteo, uso, gestión y la frontera cgo).
+
+### Lo observado en una instancia aparte (8.1.7, reales)
+
+Prueba de aceptación en una instancia desechable en `127.0.0.1:18417`
+(`plugins/cpa-tierbridge/scripts/scratch-acceptance.sh`): 3 candidatos gratuitos reales sobre el upstream de
+`127.0.0.1:8317`, 8 de 10 peticiones de chat usadas:
+
+- El host **pregunta al router una vez por petición** y ejecuta contra el `{proveedor, modelo}` fijado. **No vuelve a
+  preguntar ni cae a otro candidato** si el modelo falla: un id inexistente da `503 auth_not_found`, y un `429` del
+  upstream llega tal cual al cliente. Un candidato que falla solo se evita en la **petición siguiente**, vía
+  enfriamiento (registro de uso `Failed` 429/>= 500, `cooldown-seconds`, `Retry-After`).
+- El registro de uso de una petición enrutada lleva el **id del upstream sin el prefijo `tb-`** (no el alias ni
+  `tb-…`). El plugin asocia por `Model`, luego `Alias`, y luego id del upstream más proveedor, y conserva los
+  últimos registros vistos en `lastUsageModels` del estado.
+- Con `debug-force-error` el `panic` se traga y el alias da `400 model_not_found` con el host vivo; el tráfico que
+  no es del alias no se altera. La petición al alias sigue al candidato superior que cabe, y una segunda petición
+  salta al candidato con `quota.rpm: 1` ya gastado.
+- El host **no registra una línea de capacidades** y `/v0/management/plugins` no muestra ninguna (solo
+  `supports_oauth` y `supports_quota`).
+
+### Lo que NO está verificado
+
+- Un despliegue en la instancia viva, la recarga en caliente, el comportamiento ante fallos en *streaming*, y otras
+  plataformas distintas de macOS/arm64.
+- Las rutas de gestión, `lastUsageModels` y el enfriamiento extremo a extremo en el host: esa corrida se hizo con el
+  plugin de la primera entrega (sin contabilidad ni gestión; las cinco rutas daban 404 con el secreto y 401 sin él).
+  Queda repetirla con la versión actual (`REQUIRE_MGMT=1`); las rutas están cubiertas por pruebas unitarias.
+- Las cadenas de los registros de uso más allá de lo que mostró esa corrida (modelo del upstream sin `tb-`).
+
+**Fase 2 (opcional, no implementada):** un `Scheduler` que solo filtre credenciales.
