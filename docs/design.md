@@ -181,6 +181,14 @@ generado por el binario Rust. Así sirve a los dos omp.
    de cuota existentes. Aceptación: el plugin carga y registra sus capacidades en un CLIProxyAPI aparte;
    el alias sigue el ranking; un modelo sin cuota se salta; un fallo del plugin no rompe la petición;
    después, en vivo, la tasa de fallos medida baja frente a la línea base de §0.
+   **Fase 1 hecha (2026-11-27, `f4a1b61`):** `export cpa-router` (ranking `free-first` con límites gratuitos
+   de freellmapi) y plugin `tierbridge` en `plugins/cpa-tierbridge/` (ModelRouter, contabilidad por
+   `UsagePlugin` con rpm/rpd/tpm/tpd, presupuesto diario, enfriamiento tras 429/5xx, estado persistido y
+   rutas de gestión autenticadas). Sin `QuotaProvider`: la API de cuota del host es por credencial.
+   Aceptación en un CLIProxyAPI aparte con el binario vivo 8.1.7: 12 comprobaciones superadas. Hallazgo
+   para la fase 2: si el modelo elegido falla, el host **no** vuelve a preguntar al router ni cae a otro
+   modelo; el error llega al cliente y el modelo solo se evita en la petición siguiente. No desplegado en
+   la instancia viva.
 7. **(Condicional) `ProviderExecutor` o fork mínimo**: `ProviderExecutor` solo para los proveedores nativos
    no OpenAI que se usen de verdad. Fork de CLIProxyAPI solo si la API de plugins no basta; requiere ADR y
    el parche se propone también upstream.
