@@ -1,6 +1,7 @@
 //! `tierbridge` command line.
 
 mod omp;
+mod sync;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -55,6 +56,11 @@ enum Command {
     Snapshot {
         #[command(subcommand)]
         target: SnapshotCommand,
+    },
+    /// Keep the private data repo up to date: fetch, validate, classify, open a reviewable PR.
+    Sync {
+        #[command(subcommand)]
+        action: sync::SyncCommand,
     },
 }
 
@@ -213,6 +219,7 @@ struct BuildArgs {
     overrides: Option<PathBuf>,
 }
 
+#[derive(Debug)]
 struct Failure {
     code: u8,
     message: String,
@@ -259,6 +266,7 @@ fn main() -> ExitCode {
         Command::Snapshot {
             target: SnapshotCommand::OmpLive(args),
         } => omp::snapshot_omp_live(&args),
+        Command::Sync { action } => sync::dispatch(&action),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
