@@ -27,7 +27,7 @@ home="$tmp/Application Support/cpa-core"   # a space, like the live path
 mkdir -p "$home"
 case "$home" in "$tmp"/*) ;; *) echo "FATAL: fake home escaped the temp dir" >&2; exit 3 ;; esac
 
-SECRET="sk-SELFTEST-SECRET-0123456789"
+SECRET="sk-SELFTEST-SECRET-0123456789" # gitleaks:allow (fake key for the temp-dir self-test)
 cat >"$home/config.yaml" <<EOF
 host: ""
 port: 8317
