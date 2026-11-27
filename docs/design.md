@@ -169,11 +169,18 @@ generado por el binario Rust. Así sirve a los dos omp.
    una petición servida); la instancia en vivo no tiene proveedores OpenAI-compatibles, así que no se
    aplicó. Pendiente: refresco periódico (rebanada 4), modelos nuevos sin override hasta reexportar,
    tramos de precio y `thinking` no exportados.
-6. **Plugin de CLIProxyAPI**: `Scheduler` + `QuotaProvider` + página de `ManagementAPI`, con la versión de
-   CLIProxyAPI fijada (la ABI cambia a menudo). Aceptación: el plugin carga y registra las tres
-   capacidades; el orden de la cadena sigue el ranking del catálogo; un modelo sin cuota se salta; se
-   comprueba qué hace CLIProxyAPI cuando el plugin devuelve error; la tasa de fallos medida baja frente a
-   la línea base de §0.
+6. **Plugin de CLIProxyAPI**: `ModelRouter` + `QuotaProvider` + `ManagementAPI`, con la versión de
+   CLIProxyAPI fijada (la ABI cambia a menudo). **Corregido el 2026-11-27 tras estudiar el host:** un
+   `Scheduler` solo elige credencial dentro del proveedor ya resuelto, así que el ranking entre modelos
+   va en un `ModelRouter`. Un error de `Scheduler` aborta la petición; uno de `ModelRouter` se salta.
+   Ninguno de los 32 plugins vivos hace ranking por catálogo, cuota por modelo ni presupuesto.
+   **Fase 1 (aditiva):** el ranking lo calcula `tierbridge export cpa-router` (Rust, determinista) y el
+   plugin en Go solo atiende su alias propio (`tierbridge/auto`), aplica ajuste a la petición, cuota y
+   presupuesto, y ante cualquier fallo propio devuelve `Handled:false`. **Fase 2 (opcional):** un
+   `Scheduler` solo de filtro (`ExcludeCandidates`), nunca de elección directa, para no pisar los plugins
+   de cuota existentes. Aceptación: el plugin carga y registra sus capacidades en un CLIProxyAPI aparte;
+   el alias sigue el ranking; un modelo sin cuota se salta; un fallo del plugin no rompe la petición;
+   después, en vivo, la tasa de fallos medida baja frente a la línea base de §0.
 7. **(Condicional) `ProviderExecutor` o fork mínimo**: `ProviderExecutor` solo para los proveedores nativos
    no OpenAI que se usen de verdad. Fork de CLIProxyAPI solo si la API de plugins no basta; requiere ADR y
    el parche se propone también upstream.
