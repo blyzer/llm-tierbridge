@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tern.local/gateway/gateway-model.schema.json",
+  "title": "Gateway normalized model record (proof v0)",
+  "description": "Two record shapes share one vocabulary. `observation` = what ONE source says about ONE model (adapters emit these; unknown is null, never 0/false). `model` = the merged record the gateway serves, with per-field provenance. Field names reuse omp-catalog's SourceModelRecord wire names (contextWindow, maxTokens, cost.cacheRead, thinking.*, deprecated) and ModelProvenance/ProvenanceSource/EvidenceConfidence/ProvenanceKind enums (crates/catalog/src/{compile,model}.rs). New vs the crate: acceptedParams, lifecycle, canonicalId, references, per-field provenance.",
+  "oneOf": [
+    { "$ref": "#/$defs/Observation" },
+    { "$ref": "#/$defs/Model" }
+  ],
+  "$defs": {
+    "ProvenanceKind": {
+      "description": "crate ProvenanceKind: bundled = snapshot shipped with the build; discovered = reported by a live provider call; configured = explicit user config.",
+      "enum": ["bundled", "discovered", "configured"]
+    },
+    "Confidence": {
+      "description": "crate EvidenceConfidence.",
+      "enum": ["verified", "declared", "inferred", "unknown"]
+    },
+    "Modality": {
+      "description": "crate SourceModality.",
+      "enum": ["text", "image", "audio", "video", "pdf"]
+    },
+    "Effort": {
+      "description": "crate ReasoningEffort (snake_case). models.dev/modelparams 'none' maps to 'off'.",
+      "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    },
+    "TokenCount": { "type": ["integer", "null"], "minimum": 1 },
+    "UsdPerMtok": {
+      "description": "Decimal US dollars per one million tokens (crate SourceCost unit). null = unknown.",
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "ProvenanceSource": {
+      "description": "crate ProvenanceSource + a stable sourceId used as the key in per-field provenance.",
+      "type": "object",
+      "required": ["sourceId", "kind", "origin", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]*$" },
+        "kind": { "$ref": "#/$defs/ProvenanceKind" },
+        "origin": { "type": "string", "description": "Stable name or content address, e.g. 'https://models.dev/api.json#sha256=...'." },
+        "revision": { "type": ["string", "null"], "description": "Upstream generatedAt / commit / binary version." },
+        "confidence": { "$ref": "#/$defs/Confidence" },
+        "observedAtMs": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "PriceTier": {
+      "description": "crate PriceTier: replacement prices above a prompt-token threshold.",
+      "type": "object",
+      "required": ["promptTokensAbove"],
+      "additionalProperties": false,
+      "properties": {
+        "promptTokensAbove": { "type": "integer", "minimum": 1 },
+        "input": { "$ref": "#/$defs/UsdPerMtok" },
+        "output": { "$ref": "#/$defs/UsdPerMtok" },
+        "cacheRead": { "$ref": "#/$defs/UsdPerMtok" },
+        "cacheWrite": { "$ref": "#/$defs/UsdPerMtok" }
+      }
+    },
+    "Cost": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "description": "known = priced; free = source says price is 0; unknown = source has no price (a 0 from a gateway with pricingStatus 'unknown' is NOT free).",
+          "enum": ["known", "free", "unknown"]
+        },
+        "input": { "$ref": "#/$defs/UsdPerMtok" },
+        "output": { "$ref": "#/$defs/UsdPerMtok" },
+        "cacheRead": { "$ref": "#/$defs/UsdPerMtok" },
+        "cacheWrite": { "$ref": "#/$defs/UsdPerMtok" },
+        "tiers": { "type": "array", "items": { "$ref": "#/$defs/PriceTier" } }
+      }
+    },
+    "Thinking": {
+      "description": "crate SourceThinking subset. efforts = accepted named levels (stable order); budget bounds from models.dev budget_tokens.",
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["none", "toggle", "effort", "budget", "unknown"] },
+        "efforts": { "type": "array", "items": { "$ref": "#/$defs/Effort" }, "uniqueItems": true },
+        "canDisable": { "type": ["boolean", "null"] },
+        "defaultLevel": { "oneOf": [{ "$ref": "#/$defs/Effort" }, { "type": "null" }] },
+        "effortMap": {
+          "description": "effort -> native spelling; null = level not accepted by this route.",
+          "type": "object",
+          "additionalProperties": { "type": ["string", "null"] }
+        },
+        "minBudgetTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "maxBudgetTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "dynamicBudget": { "type": ["boolean", "null"], "description": "models.dev budget_tokens.min == -1: provider picks the budget." }
+      }
+    },
+    "Lifecycle": {
+      "description": "live/retired. crate has only `deprecated: bool`; status adds retired + replacement + shutdown date (modelparams.dev status/replacement/shutdownOn; models.dev status).",
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["live", "preview", "deprecated", "retired", "unknown"] },
+        "replacement": { "type": ["string", "null"] },
+        "shutdownOn": { "type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+      }
+    },
+    "AcceptedParam": {
+      "description": "One request-body knob the model accepts (modelparams.dev params[]). `path` is the wire path and is surface-specific.",
+      "type": "object",
+      "required": ["path", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "type": { "enum": ["integer", "number", "boolean", "string", "enum", "array", "object"] },
+        "group": { "type": ["string", "null"] },
+        "values": { "type": ["array", "null"] },
+        "range": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "min": { "type": "number" },
+            "max": { "type": "number" },
+            "step": { "type": "number" }
+          }
+        },
+        "default": {},
+        "conditional": { "type": "boolean", "description": "true if modelparams.dev attaches an `applicability` condition." }
+      }
+    },
+    "ModelRef": {
+      "description": "Pointer to a reference-catalog entry that matched, and by which rule tier.",
+      "type": "object",
+      "required": ["sourceId", "provider", "id", "tier"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceId": { "type": "string" },
+        "provider": { "type": "string" },
+        "id": { "type": "string" },
+        "tier": { "enum": ["T1-exact-full", "T2-exact-leaf", "T3-normalized-leaf", "T4-date-stripped"] },
+        "firstParty": { "type": "boolean" }
+      }
+    },
+    "SharedFields": {
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string", "description": "Serving provider/gateway id (omp provider id or catalog provider id)." },
+        "id": { "type": "string", "description": "Wire model id exactly as the provider spells it." },
+        "name": { "type": ["string", "null"] },
+        "canonicalId": { "type": ["string", "null"], "description": "Vendor lineage id 'vendor/model' (models.dev canonical_model_id) when known." },
+        "kind": { "enum": ["chat", "embedding", "image", "video", "rerank", "stt", "tts", "other", null] },
+        "contextWindow": { "$ref": "#/$defs/TokenCount" },
+        "maxInputTokens": { "$ref": "#/$defs/TokenCount" },
+        "maxTokens": { "description": "Max generated output tokens (crate ModelLimits.maximum_output_tokens).", "$ref": "#/$defs/TokenCount" },
+        "cost": { "oneOf": [{ "$ref": "#/$defs/Cost" }, { "type": "null" }] },
+        "input": { "type": ["array", "null"], "items": { "$ref": "#/$defs/Modality" }, "uniqueItems": true },
+        "output": { "type": ["array", "null"], "items": { "$ref": "#/$defs/Modality" }, "uniqueItems": true },
+        "reasoning": { "type": ["boolean", "null"] },
+        "thinking": { "oneOf": [{ "$ref": "#/$defs/Thinking" }, { "type": "null" }] },
+        "supportsTools": { "type": ["boolean", "null"] },
+        "lifecycle": { "oneOf": [{ "$ref": "#/$defs/Lifecycle" }, { "type": "null" }] },
+        "acceptedParams": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AcceptedParam" } },
+        "authType": { "enum": ["api_key", "subscription", "oauth", "none", null], "description": "modelparams.dev tracks API-key and subscription contracts separately." }
+      }
+    },
+    "Observation": {
+      "description": "What one source claims about one model. Absent/null = the source does not say.",
+      "allOf": [{ "$ref": "#/$defs/SharedFields" }],
+      "type": "object",
+      "required": ["recordType", "source", "provider", "id"],
+      "unevaluatedProperties": false,
+      "properties": {
+        "recordType": { "const": "observation" },
+        "source": { "$ref": "#/$defs/ProvenanceSource" },
+        "selector": { "type": ["string", "null"], "description": "omp CLI selector 'provider/id' (live omp output only)." },
+        "raw": { "type": "object", "description": "Verbatim pass-through of source fields we did not normalise (kept small)." }
+      }
+    },
+    "FieldProvenance": {
+      "description": "Why this value won: the source, the rule that picked it, and every disagreeing candidate (so a wrong winner is auditable, not silent).",
+      "type": "object",
+      "required": ["source", "rule", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "description": "sourceId of the winner." },
+        "rule": { "type": "string", "description": "precedence rule id, e.g. 'limits:first-party-ref > gateway'." },
+        "confidence": { "$ref": "#/$defs/Confidence" },
+        "conflict": { "type": "boolean", "description": "true if at least one other source reported a different non-null value." },
+        "alternates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "source": { "type": "string" },
+              "value": {},
+              "confidence": { "$ref": "#/$defs/Confidence" }
+            }
+          }
+        }
+      }
+    },
+    "Model": {
+      "description": "Merged record. Values are the winners; provenance.fields[fieldPath] says where each came from.",
+      "allOf": [{ "$ref": "#/$defs/SharedFields" }],
+      "type": "object",
+      "required": ["recordType", "key", "provider", "id", "provenance"],
+      "unevaluatedProperties": false,
+      "properties": {
+        "recordType": { "const": "model" },
+        "key": { "type": "string", "description": "provider + '/' + id (the id after the provider segment may itself contain '/')." },
+        "references": { "type": "array", "items": { "$ref": "#/$defs/ModelRef" } },
+        "provenance": {
+          "type": "object",
+          "required": ["sources", "fields"],
+          "additionalProperties": false,
+          "properties": {
+            "sources": { "type": "array", "items": { "$ref": "#/$defs/ProvenanceSource" } },
+            "fields": {
+              "type": "object",
+              "propertyNames": { "enum": ["contextWindow", "maxInputTokens", "maxTokens", "cost", "input", "output", "reasoning", "thinking", "supportsTools", "lifecycle", "acceptedParams", "name", "canonicalId"] },
+              "additionalProperties": { "$ref": "#/$defs/FieldProvenance" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,810 @@
+{
+ "models": [
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-5",
+   "selector": "easycliproxy/gpt-5",
+   "name": "gpt-5",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-5-mini",
+   "selector": "easycliproxy/gpt-5-mini",
+   "name": "gpt-5-mini",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text",
+    "image"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-5-nano",
+   "selector": "easycliproxy/gpt-5-nano",
+   "name": "gpt-5-nano",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-4.1",
+   "selector": "easycliproxy/gpt-4.1",
+   "name": "gpt-4.1",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text",
+    "image"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-4.1-mini",
+   "selector": "easycliproxy/gpt-4.1-mini",
+   "name": "gpt-4.1-mini",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-4o",
+   "selector": "easycliproxy/gpt-4o",
+   "name": "gpt-4o",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text",
+    "image"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-4o-mini",
+   "selector": "easycliproxy/gpt-4o-mini",
+   "name": "gpt-4o-mini",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "o3",
+   "selector": "easycliproxy/o3",
+   "name": "o3",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text",
+    "image"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "o4-mini",
+   "selector": "easycliproxy/o4-mini",
+   "name": "o4-mini",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "claude-sonnet-4-5",
+   "selector": "easycliproxy/claude-sonnet-4-5",
+   "name": "claude-sonnet-4-5",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text",
+    "image"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "claude-opus-4-1",
+   "selector": "easycliproxy/claude-opus-4-1",
+   "name": "claude-opus-4-1",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "claude-haiku-4-5",
+   "selector": "easycliproxy/claude-haiku-4-5",
+   "name": "claude-haiku-4-5",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text",
+    "image"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gemini-2.5-pro",
+   "selector": "easycliproxy/gemini-2.5-pro",
+   "name": "gemini-2.5-pro",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gemini-2.5-flash",
+   "selector": "easycliproxy/gemini-2.5-flash",
+   "name": "gemini-2.5-flash",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gemini-2.0-flash",
+   "selector": "easycliproxy/gemini-2.0-flash",
+   "name": "gemini-2.0-flash",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "deepseek-r1",
+   "selector": "easycliproxy/deepseek-r1",
+   "name": "deepseek-r1",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "qwen3-coder",
+   "selector": "easycliproxy/qwen3-coder",
+   "name": "qwen3-coder",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-oss-20b",
+   "selector": "easycliproxy/gpt-oss-20b",
+   "name": "gpt-oss-20b",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-oss-120b",
+   "selector": "easycliproxy/gpt-oss-120b",
+   "name": "gpt-oss-120b",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "kimi-k2",
+   "selector": "easycliproxy/kimi-k2",
+   "name": "kimi-k2",
+   "contextWindow": 1000000,
+   "maxTokens": 128000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "llama-3.3-70b-instruct",
+   "selector": "easycliproxy/llama-3.3-70b-instruct",
+   "name": "llama-3.3-70b-instruct",
+   "contextWindow": 262144,
+   "maxTokens": 65536,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "mistral-large-latest",
+   "selector": "easycliproxy/mistral-large-latest",
+   "name": "mistral-large-latest",
+   "contextWindow": 262144,
+   "maxTokens": 65536,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "grok-4",
+   "selector": "easycliproxy/grok-4",
+   "name": "grok-4",
+   "contextWindow": 262144,
+   "maxTokens": 65536,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "grok-3",
+   "selector": "easycliproxy/grok-3",
+   "name": "grok-3",
+   "contextWindow": 262144,
+   "maxTokens": 65536,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gemini-2.5-flash-lite",
+   "selector": "easycliproxy/gemini-2.5-flash-lite",
+   "name": "gemini-2.5-flash-lite",
+   "contextWindow": 262144,
+   "maxTokens": 65536,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "gpt-4.1-nano",
+   "selector": "easycliproxy/gpt-4.1-nano",
+   "name": "gpt-4.1-nano",
+   "contextWindow": 262144,
+   "maxTokens": 65536,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "o3-mini",
+   "selector": "easycliproxy/o3-mini",
+   "name": "o3-mini",
+   "contextWindow": 200000,
+   "maxTokens": 64000,
+   "reasoning": true,
+   "thinking": [
+    "low",
+    "medium",
+    "high",
+    "ultra"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "codestral-latest",
+   "selector": "easycliproxy/codestral-latest",
+   "name": "codestral-latest",
+   "contextWindow": 128000,
+   "maxTokens": 0,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "acme/gpt-5-mini",
+   "selector": "easycliproxy/acme/gpt-5-mini",
+   "name": "acme/gpt-5-mini",
+   "contextWindow": 128000,
+   "maxTokens": 32768,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "claude-sonnet-4.5",
+   "selector": "easycliproxy/claude-sonnet-4.5",
+   "name": "claude-sonnet-4.5",
+   "contextWindow": 200000,
+   "maxTokens": 64000,
+   "reasoning": true,
+   "thinking": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "easycliproxy",
+   "kind": "chat",
+   "id": "acme/unlisted-model-7b",
+   "selector": "easycliproxy/acme/unlisted-model-7b",
+   "name": "acme/unlisted-model-7b",
+   "contextWindow": 32768,
+   "maxTokens": 4096,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  }
+ ]
+}

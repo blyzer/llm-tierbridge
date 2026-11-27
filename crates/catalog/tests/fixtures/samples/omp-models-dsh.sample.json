@@ -1,0 +1,209 @@
+{
+ "models": [
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-5",
+   "selector": "dsh/gpt-5",
+   "name": "gpt-5",
+   "contextWindow": 128000,
+   "maxTokens": 8192,
+   "reasoning": true,
+   "thinking": [
+    "low",
+    "high"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-5-mini",
+   "selector": "dsh/gpt-5-mini",
+   "name": "gpt-5-mini",
+   "contextWindow": 129000,
+   "maxTokens": 8193,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-5-nano",
+   "selector": "dsh/gpt-5-nano",
+   "name": "gpt-5-nano",
+   "contextWindow": 130000,
+   "maxTokens": 8194,
+   "reasoning": true,
+   "thinking": [
+    "low",
+    "high"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-4.1",
+   "selector": "dsh/gpt-4.1",
+   "name": "gpt-4.1",
+   "contextWindow": 131000,
+   "maxTokens": 8195,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-4.1-mini",
+   "selector": "dsh/gpt-4.1-mini",
+   "name": "gpt-4.1-mini",
+   "contextWindow": 132000,
+   "maxTokens": 8196,
+   "reasoning": true,
+   "thinking": [
+    "low",
+    "high"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-4o",
+   "selector": "dsh/gpt-4o",
+   "name": "gpt-4o",
+   "contextWindow": 133000,
+   "maxTokens": 8197,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "gpt-4o-mini",
+   "selector": "dsh/gpt-4o-mini",
+   "name": "gpt-4o-mini",
+   "contextWindow": 134000,
+   "maxTokens": 8198,
+   "reasoning": true,
+   "thinking": [
+    "low",
+    "high"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "o3",
+   "selector": "dsh/o3",
+   "name": "o3",
+   "contextWindow": 135000,
+   "maxTokens": 8199,
+   "reasoning": false,
+   "thinking": null,
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  },
+  {
+   "provider": "dsh",
+   "kind": "chat",
+   "id": "o4-mini",
+   "selector": "dsh/o4-mini",
+   "name": "o4-mini",
+   "contextWindow": 1000000,
+   "maxTokens": 64000,
+   "reasoning": true,
+   "thinking": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "input": [
+    "text"
+   ],
+   "cost": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0
+   },
+   "pricingStatus": "unknown"
+  }
+ ]
+}

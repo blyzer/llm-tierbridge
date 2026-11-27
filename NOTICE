@@ -1,0 +1,70 @@
+llm-tierbridge
+Copyright (c) 2026 blyzer, licensed under the MIT License (see LICENSE).
+
+THIRD-PARTY DATA
+================
+
+The test fixtures in crates/catalog/tests/fixtures/ are snapshots of third-party data, kept
+so the adapters can be tested against real files. Each source below is licensed under the MIT
+License; the permission notice at the end of this file applies to each of them. The code in
+this repository does not link against or include any of these projects.
+
+1. models.dev (https://github.com/anomalyco/models.dev)
+   Copyright (c) 2025 models.dev
+   Fixtures: models.dev.api.*, obs.models.dev.*
+
+2. modelparams.dev (https://github.com/mnfst/modelparams.dev)
+   Copyright (c) 2026 modelparams.dev contributors
+   Fixtures: modelparams.models.*, obs.modelparams.dev.*
+
+3. freellmapi (https://github.com/tashfeenahmed/freellmapi)
+   Copyright (c) 2026 Tashfeen Ahmed
+   Fixture: freellmapi.0d64e07.snapshot.json.zst (commit 0d64e07b829e5d33b5d4db037ad841844073d5b1)
+
+4. dsh-our-free-model (https://github.com/Ebony-Vinyl/dsh-our-free-model)
+   Copyright (c) 2026 Ebony-Vinyl
+   Fixture: dsh.b1142bd.snapshot.json.zst (commit b1142bd4cb46dadfb6f5729f5e21025eca19f094),
+   the file src/providers/registry.json only. Its LICENSE says the registry content is rebuilt
+   from models.dev (MIT) with provider ids and endpoints from 9router (MIT,
+   Copyright (c) 2024-2026 decolua and contributors). The repository's own LICENSE appendix
+   leaves one redistribution question open (the Qoder auth WASM); that file is not part of
+   the fixture.
+
+5. oh-my-pi (https://github.com/can1357/oh-my-pi)
+   Copyright (c) 2025-2026 Can Bölük
+   Copyright (c) 2026 Stencil Labs, Inc.
+   Fixtures: omp-oracle-models.*, obs.omp-bundled.* (the roster the project keeps in
+   fixtures/llm-oracle/catalog/models.json.zst).
+
+DATA NOT REDISTRIBUTED
+======================
+
+router-for-me/models (https://github.com/router-for-me/models) publishes no LICENSE file. Its
+data is NOT included in this repository: the adapter that reads it ships without a snapshot,
+and the tests that use one run only when the user supplies it locally
+(see "Pruebas" in README.md).
+
+The gateway rosters used during development (cache of a CLIProxyAPI gateway, `omp models`
+listings of private gateways) are not included either. The tests that cover those adapters
+use small synthetic samples built from public model ids.
+
+MIT LICENSE PERMISSION NOTICE (applies to items 1-5 above)
+==========================================================
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
