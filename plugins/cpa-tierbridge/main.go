@@ -116,7 +116,10 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {}
+func cliproxyPluginShutdown() {
+	defer func() { _ = recover() }() // never let a panic cross the cgo boundary
+	handler.Flush()
+}
 
 // writeResponse hands raw to the host in a C-allocated buffer that cliproxyPluginFree releases.
 func writeResponse(response *C.cliproxy_buffer, raw []byte) {

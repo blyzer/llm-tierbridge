@@ -1,12 +1,14 @@
 package rpc
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,5 +261,108 @@ func TestUsageMatchesTheUpstreamIDWithoutThePrefix(t *testing.T) {
 	seen := h.Status().LastUsageModels
 	if seen[len(seen)-1].Model != "beta" || seen[len(seen)-1].Provider != "gw" || !seen[len(seen)-1].Matched {
 		t.Errorf("lastUsageModels = %+v", seen)
+	}
+}
+
+func stateTPD(t *testing.T, path, model string) int64 {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("state file: %v", err)
+	}
+	var st struct {
+		Models map[string]struct{ TPD int64 }
+	}
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st.Models[model].TPD
+}
+
+// Pending state younger than the debounce must reach the file on quiesce, on shutdown and from the C hook.
+func TestFlushOnQuiesceShutdownAndHook(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flush func(h *Handler)
+	}{
+		{"quiesce", func(h *Handler) { h.Handle(wire.MethodPluginQuiesce, nil) }},
+		{"shutdown", func(h *Handler) { h.Handle(wire.MethodPluginShutdown, nil) }},
+		{"hook func", func(h *Handler) { h.Flush() }},
+		{"hook then shutdown", func(h *Handler) { h.Flush(); h.Flush(); h.Handle(wire.MethodPluginShutdown, nil) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := filepath.Join(t.TempDir(), "state.json")
+			h, _ := newPlugin(t, wrap(twoModels), fmt.Sprintf("state-path: %q\n", state))
+			// Pin the clock: the first change writes at once, later ones wait for the debounce timer.
+			sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "tb-a", "Detail": detail(0, 0, 10)}))
+			h.persist.Flush()
+			sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "tb-a", "Detail": detail(0, 0, 25)}))
+			if !h.Status().Persistence.Dirty {
+				t.Skip("the debounce timer already wrote the change")
+			}
+			tc.flush(h)
+			if got := stateTPD(t, state, "tb-a"); got != 35 {
+				t.Errorf("tpd in the file = %d, want 35", got)
+			}
+			if h.Status().Persistence.Dirty {
+				t.Error("still dirty after the flush")
+			}
+		})
+	}
+}
+
+func TestFlushWithoutStatePathAndAfterPanic(t *testing.T) {
+	h := NewHandler()
+	h.Flush() // no path: nothing to do
+	h.persist = nil
+	h.Flush() // a nil persister panics inside; Flush recovers
+	h.mu.RLock()
+	last := h.lastErr
+	h.mu.RUnlock()
+	if !strings.Contains(last, "flush: panic") {
+		t.Errorf("lastError = %q", last)
+	}
+}
+
+// Flushing from other goroutines while routes and usage records run must neither deadlock nor race.
+func TestFlushConcurrentWithRouteAndUsage(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	h, _ := newPlugin(t, wrap(twoModels), fmt.Sprintf("state-path: %q\n", state))
+	h.now = time.Now
+	body := hostRouteRequest(t, aliasModel, chatBody(40, ""), nil)
+	rec := hostUsageRecord(t, map[string]any{"Model": "tb-a", "Detail": detail(1, 1, 2)})
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				h.Handle(wire.MethodModelRoute, body)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				h.Handle(wire.MethodUsageHandle, rec)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				h.Flush()
+				h.Handle(wire.MethodPluginQuiesce, nil)
+			}
+		}()
+	}
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("deadlock: route, usage and flush did not finish")
+	}
+	h.Flush()
+	if got := stateTPD(t, state, "tb-a"); got != 600*2 {
+		t.Errorf("tpd = %d, want %d", got, 600*2)
 	}
 }

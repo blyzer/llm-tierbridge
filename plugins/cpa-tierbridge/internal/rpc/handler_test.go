@@ -115,7 +115,7 @@ func newPlugin(t *testing.T, router, extraYAML string) (*Handler, string) {
 	}
 	h := NewHandler()
 	h.now = func() time.Time { return clock }
-	t.Cleanup(h.persist.Close) // before the temp dir goes: a late write must not recreate it
+	t.Cleanup(h.Flush) // before the temp dir goes: a late write must not recreate it
 	yaml := fmt.Sprintf("enabled: true\npriority: 0\nrouter-file: %q\n%s", path, extraYAML)
 	if env := decode(t, h.Handle(wire.MethodPluginRegister, lifecycle(t, yaml)), nil); !env.OK {
 		t.Fatalf("register failed: %+v", env.Error)
@@ -438,7 +438,7 @@ func TestGoldenRegister(t *testing.T) {
 		`{"Name":"alias","Type":"string","Default":"tierbridge/auto","EnumValues":null,"Description":"Model name the plugin answers to. Every other model is left to the host."},` +
 		`{"Name":"daily-budget-usd","Type":"number","Default":0,"EnumValues":null,"Description":"Estimated spend allowed per UTC day, in USD. 0 means no budget."},` +
 		`{"Name":"cooldown-seconds","Type":"integer","Default":60,"EnumValues":null,"Description":"Seconds a candidate is skipped after an upstream failure reported by the usage plugin."},` +
-		`{"Name":"state-path","Type":"string","Default":"","EnumValues":null,"Description":"File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written at most every 5 s). Empty means no persistence."},` +
+		`{"Name":"state-path","Type":"string","Default":"","EnumValues":null,"Description":"File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written within ~1 s of a change). Empty means no persistence."},` +
 		`{"Name":"decisions-keep","Type":"integer","Default":50,"EnumValues":null,"Description":"How many recent routing decisions the management status keeps."},` +
 		`{"Name":"debug-force-error","Type":"boolean","Default":false,"EnumValues":null,"Description":"TEST SWITCH ONLY: makes model routing fail internally so an acceptance run can prove the host falls through."}` +
 		`]},"capabilities":{"model_router":true,"usage_plugin":true,"management_api":true}}}`

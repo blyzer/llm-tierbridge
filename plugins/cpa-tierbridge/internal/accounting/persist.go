@@ -26,8 +26,10 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-// SaveInterval is the minimum time between two writes of the state file.
-const SaveInterval = 5 * time.Second
+// SaveInterval is the minimum time between two writes of the state file: a change is written at once
+// when the previous write is older than this, else within this interval of the previous write. It also
+// bounds how much a host stop can lose when no shutdown hook runs.
+const SaveInterval = time.Second
 
 // State is the persisted form of the counters (decisions and the usage ring are not persisted).
 type State struct {

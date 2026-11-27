@@ -65,6 +65,18 @@ func NewHandler() *Handler {
 	return h
 }
 
+// Flush writes pending accounting state to disk synchronously. It is idempotent, safe to call
+// concurrently with routing and usage, and never panics: it backs plugin.quiesce, plugin.shutdown and
+// the C shutdown hook (the host may stop without sending either RPC).
+func (h *Handler) Flush() {
+	defer func() {
+		if r := recover(); r != nil {
+			h.noteError(fmt.Sprintf("flush: panic: %v", r))
+		}
+	}()
+	h.persist.Flush()
+}
+
 // Handle runs one RPC call and returns the response envelope. It never panics: a panic inside the
 // plugin becomes an error envelope (model.route is the exception, see route: a router that fails is
 // skipped by the host, so it answers Handled:false instead).
@@ -78,10 +90,8 @@ func (h *Handler) Handle(method string, request []byte) (out []byte) {
 	switch method {
 	case wire.MethodPluginRegister, wire.MethodPluginReconfigure:
 		return h.lifecycle(request)
-	case wire.MethodPluginQuiesce:
-		return h.ok(struct{}{})
-	case wire.MethodPluginShutdown:
-		h.persist.Close()
+	case wire.MethodPluginQuiesce, wire.MethodPluginShutdown:
+		h.Flush()
 		return h.ok(struct{}{})
 	case wire.MethodModelRoute:
 		return h.ok(h.route(request))
@@ -180,7 +190,7 @@ func ConfigFields() []wire.ConfigField {
 		{Name: "cooldown-seconds", Type: wire.ConfigFieldInteger, Default: config.DefaultCooldownSeconds,
 			Description: "Seconds a candidate is skipped after an upstream failure reported by the usage plugin."},
 		{Name: "state-path", Type: wire.ConfigFieldString, Default: "",
-			Description: "File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written at most every 5 s). Empty means no persistence."},
+			Description: "File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written within ~1 s of a change). Empty means no persistence."},
 		{Name: "decisions-keep", Type: wire.ConfigFieldInteger, Default: config.DefaultDecisionsKeep,
 			Description: "How many recent routing decisions the management status keeps."},
 		{Name: "debug-force-error", Type: wire.ConfigFieldBoolean, Default: false,

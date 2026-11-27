@@ -196,12 +196,12 @@ func TestWritesAreThrottledToOnePerInterval(t *testing.T) {
 	}
 
 	// Changes inside the interval share one scheduled write, SaveInterval after the previous one.
-	clk.now = t0.Add(time.Second)
+	clk.now = t0.Add(400 * time.Millisecond)
 	mustReserve(t, a, c, 0, clk.now)
 	mustReserve(t, a, c, 0, clk.now)
 	a.Charge(c, Usage{TotalTokens: 5}, clk.now)
-	if len(clk.pending) != 1 || clk.delays[1] != SaveInterval-time.Second {
-		t.Fatalf("pending %d delays %v, want one write in %v", len(clk.pending), clk.delays, SaveInterval-time.Second)
+	if want := SaveInterval - 400*time.Millisecond; len(clk.pending) != 1 || clk.delays[1] != want || want > time.Second {
+		t.Fatalf("pending %d delays %v, want one write in %v (never more than 1 s)", len(clk.pending), clk.delays, want)
 	}
 	if st := p.Status(); !st.Dirty || st.Saves != 1 {
 		t.Fatalf("status = %+v, want dirty and one save", st)
@@ -226,6 +226,27 @@ func TestWritesAreThrottledToOnePerInterval(t *testing.T) {
 	clk.fire() // the cancelled timer does nothing
 	if st := p.Status(); st.Saves != 3 {
 		t.Errorf("saves = %d after the cancelled timer fired", st.Saves)
+	}
+}
+
+// A change older than SaveInterval since the last write is written without delay; any change is on disk
+// within SaveInterval of being made.
+func TestDebounceBoundIsOneSecond(t *testing.T) {
+	if SaveInterval > time.Second {
+		t.Fatalf("SaveInterval = %v, want <= 1 s", SaveInterval)
+	}
+	clk := &fakeClock{now: t0}
+	a, _ := newPersisted(t, filepath.Join(t.TempDir(), "state.json"), clk)
+	c := free("m")
+	for i := range 10 {
+		clk.now = t0.Add(time.Duration(i) * 300 * time.Millisecond)
+		mustReserve(t, a, c, 0, clk.now)
+		for _, d := range clk.delays {
+			if d > SaveInterval {
+				t.Fatalf("scheduled a write %v away", d)
+			}
+		}
+		clk.fire()
 	}
 }
 

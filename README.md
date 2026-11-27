@@ -465,8 +465,9 @@ Escribe `tierbridge-router.json` (esquema `tierbridge-router/1`): la lista orden
 - **`UsagePlugin`: contabilidad.** Con los registros de uso del host cuenta tokens (`tpm` en ventana deslizante de
   60 s, `tpd` por día UTC), gasto diario (`daily-budget-usd`; precio desconocido cuenta 0 y se lista como
   `unpriced`) y pone en enfriamiento (`cooldown-seconds`, o un `Retry-After` mayor) al modelo cuyo registro sea
-  `Failed` con 429 o >= 500. El estado se guarda de forma atómica en `state-path` (JSON, modo 0600, como mucho cada
-  5 s y al apagar).
+  `Failed` con 429 o >= 500. El estado se guarda de forma atómica en `state-path` (JSON, modo 0600) en el plazo de ~1 s tras un
+  cambio y, de forma síncrona, en `plugin.quiesce`, `plugin.shutdown` y el gancho C de apagado; que el host invoque
+  ese gancho al recibir SIGTERM no está verificado hasta repetir la prueba de aceptación.
 - **Rutas de gestión autenticadas**, solo lectura: `/tierbridge/status`, `/candidates`, `/counters`, `/budget` y
   `/decisions?limit=N` (bajo el prefijo de gestión del host, p. ej. `/v0/management/tierbridge/status`). No hay
   `QuotaProvider`: la API de cuotas del host es **por credencial** (`auth_index`), y aquí el límite, el
