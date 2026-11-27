@@ -17,3 +17,8 @@ prototype/out/catalog-proof.md
 
 # cpa-tierbridge plugin: built c-shared libraries (dylib) are never committed
 plugins/cpa-tierbridge/dist/
+
+# the live router file `tierbridge export cpa-router --out tierbridge-router.json` writes when run from
+# the repo root: ranked rows of the author's private gateway roster, kept on the author's machine only
+# (anywhere under local-fixtures/ is already covered above)
+/tierbridge-router.json

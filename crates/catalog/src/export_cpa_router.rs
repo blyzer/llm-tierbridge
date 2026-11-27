@@ -2,9 +2,12 @@
 //!
 //! The plugin's `ModelRouter` only answers its own alias (`tierbridge/auto`); this module decides,
 //! deterministically and offline, which models stand behind it and in what order. The candidates
-//! are the rows of ONE gateway (the one `export cpa` writes into CLIProxyAPI), so every
-//! `candidate.model` is an alias `export cpa` registers for the same `--name` and `--alias-prefix`
-//! and `candidate.provider` is the provider key CLIProxyAPI derives from that name.
+//! are the rows of ONE gateway (the one CLIProxyAPI serves) and the file is written for the CPA
+//! that runs the plugin, the **host** (`target: "host"`): every `candidate.model` is what that CPA
+//! itself accepts for the row, `model_prefix` + `id`, and there is no provider (`tierbridge-router/1`
+//! named one, `/2` does not). A live CPA lists the plain id in its `/v1/models` (empty prefix); a
+//! scratch CPA configured with `export cpa --alias-prefix tb-` accepts `tb-` + id, so there
+//! `candidate.model` is an alias `export cpa` registers.
 //!
 //! # What is left out
 //!
@@ -67,8 +70,10 @@ use crate::freellmapi::SOURCE_ID as FREELLMAPI;
 use crate::model::{Cost, CostStatus, Lifecycle, LifecycleStatus, Modality, ModelKind};
 use crate::models_dev::sha256_hex;
 
-/// `schema` of the written file.
-pub const SCHEMA: &str = "tierbridge-router/1";
+/// `schema` of the written file. `/2` is the host mode: no `provider`, plus `target` and `modelPrefix`.
+pub const SCHEMA: &str = "tierbridge-router/2";
+/// `target` of the written file: the CPA that runs the plugin resolves every `candidate.model` itself.
+pub const TARGET: &str = "host";
 /// Alias the plugin serves unless told otherwise.
 pub const DEFAULT_ALIAS: &str = "tierbridge/auto";
 
@@ -92,11 +97,11 @@ impl Profile {
 pub struct RouterOptions<'a> {
     /// Gateway source id as it prefixes catalog keys (`omp-live:easycliproxy`).
     pub gateway: &'a str,
-    /// `name:` the `export cpa` entry for this gateway has; the provider key derives from it.
-    pub provider_name: &'a str,
-    /// The `export cpa` alias prefix, prepended to every id to form `candidate.model`.
-    pub alias_prefix: &'a str,
-    /// The alias clients call (`tierbridge/auto`). It must not be a model alias itself.
+    /// Prepended to every id to form `candidate.model`, the name the host CPA accepts: empty for a
+    /// live CPA (the plain id its `/v1/models` lists), `tb-` for one configured by
+    /// `export cpa --alias-prefix tb-`.
+    pub model_prefix: &'a str,
+    /// The alias clients call (`tierbridge/auto`). It must not equal any candidate's `model`.
     pub alias: &'a str,
     pub profile: Profile,
     /// Bytes of `observations.freellmapi.jsonl`; `None` leaves every quota `null`.
@@ -181,10 +186,8 @@ pub struct Quota {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Candidate {
-    /// What the CPA accepts for this model: `alias_prefix` + `id`, an alias `export cpa` registers.
+    /// What the host CPA accepts for this model: `model_prefix` + `id`.
     pub model: String,
-    /// CLIProxyAPI provider key: `openai-compatible-<lowercased name>`.
-    pub provider: String,
     /// Id the gateway serves.
     pub id: String,
     /// Catalog key of the row.
@@ -218,6 +221,10 @@ pub struct RouterExport {
 #[serde(rename_all = "camelCase")]
 struct Document<'a> {
     schema: &'static str,
+    /// Who resolves `candidate.model`: always [`TARGET`].
+    target: &'static str,
+    /// What was prepended to every `id` to form `candidate.model`; `""` for a live CPA.
+    model_prefix: &'a str,
     /// SHA-256 of the exact `catalog.json` bytes this was computed from.
     catalog_sha256: String,
     /// SHA-256 of the observations the quotas came from; `null` without any.
@@ -234,20 +241,6 @@ struct AliasEntry<'a> {
     /// Rows of the gateway left out, by reason.
     skipped: BTreeMap<&'static str, usize>,
     candidates: &'a [Candidate],
-}
-
-/// The provider key CLIProxyAPI derives for an `openai-compatibility` entry called `name`
-/// (`util.OpenAICompatibleProviderKey`): trimmed and lowercased, prefixed `openai-compatible-`
-/// unless it already is, and `openai-compatibility` when empty.
-pub fn provider_key(name: &str) -> String {
-    let name: String = name.trim().chars().flat_map(char::to_lowercase).collect();
-    if name.is_empty() {
-        return "openai-compatibility".to_owned();
-    }
-    if name == "openai-compatibility" || name.starts_with("openai-compatible-") {
-        return name;
-    }
-    format!("openai-compatible-{name}")
 }
 
 #[derive(Deserialize)]
@@ -605,7 +598,6 @@ pub fn export_cpa_router(
         .freellmapi_observations
         .map(|bytes| QuotaIndex::build(bytes, &freellmapi_rows))
         .transpose()?;
-    let provider = provider_key(opts.provider_name);
 
     let mut skipped = Vec::new();
     let mut taken = BTreeSet::new();
@@ -627,10 +619,10 @@ pub fn export_cpa_router(
             skipped.push((row.key.clone(), SkipReason::PlaceholderLimits));
             continue;
         }
-        let model = format!("{}{}", opts.alias_prefix, row.id);
+        let model = format!("{}{}", opts.model_prefix, row.id);
         if model == opts.alias {
             return Err(CatalogError::Export(format!(
-                "alias `{}` is also the model alias of `{}`; pick another --alias or --alias-prefix",
+                "alias `{}` is also the model of candidate `{}`; pick another --alias or --model-prefix",
                 opts.alias, row.key
             )));
         }
@@ -661,7 +653,6 @@ pub fn export_cpa_router(
             price,
             candidate: Candidate {
                 model,
-                provider: provider.clone(),
                 id: row.id.clone(),
                 key: row.key.clone(),
                 context_window: row.context_window,
@@ -686,6 +677,8 @@ pub fn export_cpa_router(
     }
     let document = Document {
         schema: SCHEMA,
+        target: TARGET,
+        model_prefix: opts.model_prefix,
         catalog_sha256: sha256_hex(catalog),
         quota_source_sha256: opts.freellmapi_observations.map(sha256_hex),
         gateway: opts.gateway,

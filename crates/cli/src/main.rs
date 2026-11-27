@@ -15,7 +15,6 @@ use tierbridge_catalog::{
     export_cpa::{CpaOptions, PLACEHOLDER_KEY, SkipReason, export_cpa},
     export_cpa_router::{
         DEFAULT_ALIAS, Profile, RouterOptions, SkipReason as RouterSkipReason, export_cpa_router,
-        provider_key,
     },
     merge_catalog_with,
     overrides::Overrides,
@@ -143,13 +142,11 @@ struct CpaRouterArgs {
     /// Gateway whose rows are the candidates: the one `export cpa` writes into CLIProxyAPI.
     #[arg(long, value_name = "SOURCE_ID")]
     gateway: String,
-    /// The `--name` given to `export cpa` for this gateway; the candidates' provider is
-    /// `openai-compatible-<name lowercased>` [default: tierbridge-<gateway>].
-    #[arg(long, value_name = "NAME")]
-    name: Option<String>,
-    /// The `--alias-prefix` given to `export cpa`; `candidate.model` is this plus the model id.
-    #[arg(long, value_name = "TEXT", default_value = "tb-")]
-    alias_prefix: String,
+    /// What the CPA itself accepts for a model: `candidate.model` is this plus the model id.
+    /// Empty (the default) for the live CPA, which lists the plain ids in its `/v1/models`; `tb-`
+    /// for a scratch CPA configured with `export cpa --alias-prefix tb-`.
+    #[arg(long, value_name = "TEXT", default_value = "")]
+    model_prefix: String,
     /// How candidates are ordered.
     #[arg(long, value_enum, default_value_t = RouterProfile::FreeFirst)]
     profile: RouterProfile,
@@ -827,16 +824,11 @@ fn export_cpa_router_cmd(args: &CpaRouterArgs) -> Result<(), Failure> {
             std::fs::read(path).map_err(|e| failure(format!("cannot read {}: {e}", path.display())))
         })
         .transpose()?;
-    let name = args
-        .name
-        .clone()
-        .unwrap_or_else(|| default_provider_name(&args.gateway));
     let export = export_cpa_router(
         &bytes,
         &RouterOptions {
             gateway: &args.gateway,
-            provider_name: &name,
-            alias_prefix: &args.alias_prefix,
+            model_prefix: &args.model_prefix,
             alias: &args.alias,
             profile: args.profile.catalog(),
             freellmapi_observations: observations.as_deref(),
@@ -857,12 +849,12 @@ fn export_cpa_router_cmd(args: &CpaRouterArgs) -> Result<(), Failure> {
         .collect::<Vec<_>>()
         .join(", ");
     eprintln!(
-        "ranked {} candidates for alias `{}` ({}) from {} as provider `{}`{}",
+        "ranked {} candidates for alias `{}` ({}) from {} with model prefix `{}`{}",
         export.candidates.len(),
         args.alias,
         args.profile.catalog().as_str(),
         args.gateway,
-        provider_key(&name),
+        args.model_prefix,
         if skipped.is_empty() {
             String::new()
         } else {

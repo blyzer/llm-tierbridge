@@ -7,7 +7,7 @@ use tierbridge_catalog::{
     CatalogError,
     export_cpa::{CpaOptions, export_cpa},
     export_cpa_router::{
-        Profile, RouterExport, RouterOptions, SCHEMA, SkipReason, export_cpa_router, provider_key,
+        Profile, RouterExport, RouterOptions, SCHEMA, SkipReason, TARGET, export_cpa_router,
     },
 };
 
@@ -70,8 +70,7 @@ fn with_confidence(cost: Value, window: Option<u64>, cost_conf: &str, window_con
 fn options(gateway: &str) -> RouterOptions<'_> {
     RouterOptions {
         gateway,
-        provider_name: "tb-gw",
-        alias_prefix: "tb-",
+        model_prefix: "tb-",
         alias: "tierbridge/auto",
         profile: Profile::FreeFirst,
         freellmapi_observations: None,
@@ -393,6 +392,8 @@ fn candidate_fields_are_the_ones_the_plugin_reads() {
     let out = run(&rows, &options(GW));
     let doc = document(&out);
     assert_eq!(doc["schema"], SCHEMA);
+    assert_eq!(doc["target"], TARGET);
+    assert_eq!(doc["modelPrefix"], "tb-");
     assert_eq!(doc["gateway"], GW);
     assert_eq!(doc["aliases"][0]["alias"], "tierbridge/auto");
     assert_eq!(doc["aliases"][0]["profile"], "free-first");
@@ -400,7 +401,6 @@ fn candidate_fields_are_the_ones_the_plugin_reads() {
         doc["aliases"][0]["candidates"][0],
         json!({
             "model": "tb-acme/model-1",
-            "provider": "openai-compatible-tb-gw",
             "id": "acme/model-1",
             "key": format!("{GW}:gw/acme/model-1"),
             "contextWindow": 262_144,
@@ -413,6 +413,97 @@ fn candidate_fields_are_the_ones_the_plugin_reads() {
             "reasons": ["cheapest-known-cost"],
         })
     );
+}
+
+/// No object anywhere in `value` has a `provider` key (the `tierbridge-router/1` field the host
+/// mode dropped).
+fn assert_no_provider_key(value: &Value) {
+    match value {
+        Value::Object(map) => {
+            assert!(!map.contains_key("provider"), "{value}");
+            map.values().for_each(assert_no_provider_key);
+        }
+        Value::Array(items) => items.iter().for_each(assert_no_provider_key),
+        _ => {}
+    }
+}
+
+#[test]
+fn the_document_is_tierbridge_router_2_for_the_host_and_names_no_provider() {
+    let rows = [
+        gw_row("a", json!({"cost": free()})),
+        gw_row("b", json!({"cost": known(1.0, 2.0)})),
+    ];
+    let out = run(&rows, &options(GW));
+    let doc = document(&out);
+    // the literals, not the constants: changing the schema or the target must be a deliberate edit here
+    assert_eq!(SCHEMA, "tierbridge-router/2");
+    assert_eq!(TARGET, "host");
+    assert_eq!(doc["schema"], "tierbridge-router/2");
+    assert_eq!(doc["target"], "host");
+    assert_eq!(doc["modelPrefix"], "tb-");
+    let mut keys: Vec<&str> = doc
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "aliases",
+            "catalogSha256",
+            "gateway",
+            "modelPrefix",
+            "quotaSourceSha256",
+            "schema",
+            "target"
+        ]
+    );
+    assert_no_provider_key(&doc);
+    let candidates = doc["aliases"][0]["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    for candidate in candidates {
+        assert!(candidate.get("provider").is_none(), "{candidate}");
+    }
+}
+
+#[test]
+fn the_model_is_the_prefix_plus_the_id_and_an_empty_prefix_leaves_the_plain_id() {
+    let rows = [
+        gw_row("plain", json!({"cost": free()})),
+        gw_row("acme/with-slash", json!({"cost": known(1.0, 2.0)})),
+        gw_row("UPPER", json!({})),
+    ];
+    for prefix in ["", "tb-", "pre/"] {
+        let mut opts = options(GW);
+        opts.model_prefix = prefix;
+        let out = run(&rows, &opts);
+        assert_eq!(out.candidates.len(), 3, "prefix {prefix:?}");
+        for candidate in &out.candidates {
+            assert_eq!(candidate.model, format!("{prefix}{}", candidate.id));
+        }
+        let doc = document(&out);
+        assert_eq!(doc["modelPrefix"], prefix);
+        let written: Vec<&str> = doc["aliases"][0]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["model"].as_str().unwrap())
+            .collect();
+        let kept: Vec<&str> = out.candidates.iter().map(|c| c.model.as_str()).collect();
+        assert_eq!(written, kept);
+    }
+
+    // the live CPA lists the bare ids, so with no prefix the model is the id as the gateway serves
+    // it, case and slashes included
+    let mut opts = options(GW);
+    opts.model_prefix = "";
+    let out = run(&rows, &opts);
+    let models: Vec<&str> = out.candidates.iter().map(|c| c.model.as_str()).collect();
+    assert_eq!(models, ["plain", "acme/with-slash", "UPPER"]);
+    assert_eq!(document(&out)["modelPrefix"], "");
 }
 
 #[test]
@@ -465,6 +556,44 @@ fn output_is_byte_identical_across_runs_and_row_order() {
 }
 
 #[test]
+fn every_prefix_is_deterministic_and_only_renames_the_models() {
+    let rows = vec![
+        gw_row(
+            "c",
+            with_confidence(free(), Some(8_000), "declared", "declared"),
+        ),
+        gw_row("b", json!({"cost": known(1.0, 2.0)})),
+        gw_row("a", json!({})),
+        gw_row("e", json!({"kind": "image"})),
+    ];
+    let catalog = bytes(&rows);
+    let mut by_prefix = Vec::new();
+    for prefix in ["", "tb-"] {
+        let mut opts = options(GW);
+        opts.model_prefix = prefix;
+        let first = export_cpa_router(&catalog, &opts).unwrap();
+        let second = export_cpa_router(&catalog, &opts).unwrap();
+        assert_eq!(first.json, second.json, "prefix {prefix:?}");
+        by_prefix.push(first);
+    }
+    let (live, scratch) = (&by_prefix[0], &by_prefix[1]);
+    // how the CPA names the models never changes the ranking ...
+    assert_eq!(ids(live), ["c", "b", "a"]);
+    assert_eq!(ids(live), ids(scratch));
+    assert_ne!(live.json, scratch.json);
+    // ... and `model` plus `modelPrefix` are the only fields that differ
+    let normalised = |export: &RouterExport| {
+        let mut doc = document(export);
+        doc["modelPrefix"] = Value::Null;
+        for candidate in doc["aliases"][0]["candidates"].as_array_mut().unwrap() {
+            candidate["model"] = Value::Null;
+        }
+        doc
+    };
+    assert_eq!(normalised(live), normalised(scratch));
+}
+
+#[test]
 fn no_rows_for_the_gateway_is_an_error_that_lists_the_gateways_there_are() {
     let rows = [row("omp-live:other", "other", "m", json!({}))];
     let err = export_cpa_router(&bytes(&rows), &options(GW)).unwrap_err();
@@ -489,32 +618,47 @@ fn a_gateway_whose_rows_are_all_excluded_is_an_empty_list_not_an_error() {
 }
 
 #[test]
-fn the_alias_must_be_set_and_must_not_be_a_model_alias() {
+fn the_alias_must_be_set_and_must_not_equal_any_candidate_model() {
     let rows = [gw_row("auto", json!({}))];
     let mut opts = options(GW);
     opts.alias = "  ";
     assert!(export_cpa_router(&bytes(&rows), &opts).is_err());
 
+    // prefix `tb-` + id `auto` is the alias
     opts.alias = "tb-auto";
     let err = export_cpa_router(&bytes(&rows), &opts).unwrap_err();
-    assert!(err.to_string().contains("also the model alias"), "{err}");
+    assert!(matches!(err, CatalogError::Export(_)));
+    let message = err.to_string();
+    assert!(message.contains("also the model of candidate"), "{message}");
+    assert!(message.contains("--model-prefix"), "{message}");
 
-    opts.alias_prefix = "";
+    // no prefix: the model is the bare id, which is now the alias; `tb-auto` is nobody's model
+    opts.model_prefix = "";
     opts.alias = "auto";
     assert!(export_cpa_router(&bytes(&rows), &opts).is_err());
+    opts.alias = "tb-auto";
+    assert!(export_cpa_router(&bytes(&rows), &opts).is_ok());
 }
 
 #[test]
-fn provider_key_follows_cliproxyapi() {
-    assert_eq!(provider_key("tb-gw"), "openai-compatible-tb-gw");
-    assert_eq!(provider_key("  TB-GW "), "openai-compatible-tb-gw");
-    assert_eq!(
-        provider_key("tierbridge-omp-live-easycliproxy"),
-        "openai-compatible-tierbridge-omp-live-easycliproxy"
-    );
-    assert_eq!(provider_key("openai-compatible-x"), "openai-compatible-x");
-    assert_eq!(provider_key("OpenAI-Compatibility"), "openai-compatibility");
-    assert_eq!(provider_key(" "), "openai-compatibility");
+fn a_gateway_model_named_like_the_alias_collides_only_when_the_prefix_leaves_it_equal() {
+    let rows = [
+        gw_row("tierbridge/auto", json!({})),
+        gw_row("other", json!({})),
+    ];
+    let mut opts = options(GW); // alias `tierbridge/auto`, prefix `tb-`
+    assert_eq!(ids(&run(&rows, &opts)).len(), 2);
+
+    opts.model_prefix = "";
+    let err = export_cpa_router(&bytes(&rows), &opts).unwrap_err();
+    assert!(err.to_string().contains("`tierbridge/auto`"), "{err}");
+
+    // a row that is left out is not a candidate, so it cannot collide
+    let rows = [
+        gw_row("tierbridge/auto", json!({"kind": "embedding"})),
+        gw_row("other", json!({})),
+    ];
+    assert_eq!(ids(&run(&rows, &opts)), ["other"]);
 }
 
 fn observation(source: &str, provider: &str, id: &str, kind: &str, free_tier: Value) -> String {
@@ -761,7 +905,7 @@ fn a_bad_observation_line_names_its_line_number() {
 }
 
 #[test]
-fn every_candidate_is_an_alias_export_cpa_registers_under_the_same_name_and_prefix() {
+fn every_candidate_is_an_alias_export_cpa_registers_for_the_same_alias_prefix() {
     let rows = vec![
         gw_row("plain", json!({"contextWindow": 8_000})),
         gw_row("acme/with-slash", json!({"cost": free()})),
@@ -784,20 +928,16 @@ fn every_candidate_is_an_alias_export_cpa_registers_under_the_same_name_and_pref
         row("omp-live:elsewhere", "e", "foreign", json!({})),
     ];
     let catalog = bytes(&rows);
-    for (name, prefix) in [
-        ("TB-GW", "tb-"),
-        ("tierbridge-omp-live-gw", ""),
-        ("x", "pre/"),
-    ] {
+    // `tb-` is the scratch CPA (`export cpa --alias-prefix tb-`), `` the live one (plain ids)
+    for prefix in ["tb-", "", "pre/"] {
         let mut opts = options(GW);
-        opts.provider_name = name;
-        opts.alias_prefix = prefix;
+        opts.model_prefix = prefix;
         let router = export_cpa_router(&catalog, &opts).unwrap();
         let cpa = export_cpa(
             &catalog,
             &CpaOptions {
                 gateway: GW,
-                provider_name: name,
+                provider_name: "tb-gw",
                 base_url: "http://127.0.0.1:8317/v1",
                 api_key: None,
                 alias_prefix: prefix,
@@ -811,12 +951,8 @@ fn every_candidate_is_an_alias_export_cpa_registers_under_the_same_name_and_pref
         for candidate in &router.candidates {
             assert!(
                 aliases.contains(candidate.model.as_str()),
-                "{} is not an alias of export cpa ({name:?}, {prefix:?})",
+                "{} is not an alias of export cpa (prefix {prefix:?})",
                 candidate.model
-            );
-            assert_eq!(
-                candidate.provider,
-                format!("openai-compatible-{}", name.to_lowercase())
             );
         }
         // the router only ever drops more than export cpa does
