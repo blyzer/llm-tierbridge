@@ -45,7 +45,7 @@ cp -p "$home/config.yaml" "$tmp/config.orig"
 
 mkdir -p "$tmp/dist"
 printf 'dummy dylib A\n' >"$tmp/dist/tierbridge-v0.1.0.dylib"
-printf '{"schema":"tierbridge-router/1","aliases":[]}\n' >"$tmp/router.json"
+printf '{"schema":"tierbridge-router/2","aliases":[]}\n' >"$tmp/router.json"
 target="$home/plugins/darwin/arm64/tierbridge-v0.1.0.dylib"
 
 pass=0
@@ -75,7 +75,7 @@ no_secret dry-run
 ok "dry-run prints the block and touches nothing"
 
 # 2. real deploy
-run_deploy 20260101T000002Z --priority 7 --daily-budget-usd 2.5 --cooldown-seconds 45 --max-attempts 4 --alias tb/x || fail "deploy failed"
+run_deploy 20260101T000002Z --priority 7 --daily-budget-usd 2.5 --cooldown-seconds 45 --max-attempts 4 --deadline-seconds 90 --alias tb/x || fail "deploy failed"
 no_secret deploy
 same "$home/config.yaml" "$tmp/config.orig" || fail "deploy modified config.yaml"
 b1="$home/config.yaml.bak.20260101T000002Z"
@@ -88,7 +88,7 @@ m1="$TB_DEPLOY_STATE/deploy.20260101T000002Z.manifest"
 [[ $(jq -c . "$m1" | wc -l | tr -d ' ') == 3 ]] || fail "manifest should have 3 JSON lines"
 [[ $(jq -r 'select(.kind=="dylib")|.sha256' "$m1") == "$(sha "$tmp/dist/tierbridge-v0.1.0.dylib")" ]] || fail "manifest dylib sha"
 [[ $(jq -r 'select(.kind=="config")|.backupSha256' "$m1") == "$(sha "$tmp/config.orig")" ]] || fail "manifest backup sha"
-for want in 'priority: 7' 'daily-budget-usd: 2.5' 'cooldown-seconds: 45' 'max-attempts: 4' 'alias: "tb/x"' \
+for want in 'priority: 7' 'daily-budget-usd: 2.5' 'cooldown-seconds: 45' 'max-attempts: 4' 'deadline-seconds: 90' 'alias: "tb/x"' \
   "router-file: \"$tmp/router.json\"" "state-path: \"$TB_DEPLOY_STATE/tierbridge-state.json\""; do
   grep -qF -- "$want" "$out" || fail "YAML block lacks: $want"
 done
@@ -167,6 +167,8 @@ ok "an already-identical dylib is never removed by rollback"
 nb=$(find "$home" -maxdepth 1 -name 'config.yaml.bak.*' | wc -l | tr -d ' ')
 if run_deploy 20260101T000007Z --alias 'bad alias;x'; then fail "bad alias accepted"; fi
 if run_deploy 20260101T000007Z --max-attempts 0; then fail "bad max-attempts accepted"; fi
+if run_deploy 20260101T000007Z --max-attempts 51; then fail "max-attempts 51 accepted"; fi
+if run_deploy 20260101T000007Z --deadline-seconds -1; then fail "negative deadline accepted"; fi
 nobak "$nb"
 ok "invalid flags are rejected"
 

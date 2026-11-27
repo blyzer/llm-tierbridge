@@ -31,7 +31,8 @@ usage: deploy-live.sh --router-file PATH [options]
   --alias NAME              model alias the plugin answers to (default tierbridge/auto)
   --daily-budget-usd N      estimated daily spend cap, 0 = none (default 0)
   --cooldown-seconds N      cooldown after a failed upstream record (default 60)
-  --max-attempts N          attempts per request (default 3)
+  --max-attempts N          attempts per request, 1-50 (default 3)
+  --deadline-seconds N      overall per-request deadline, 0 = none (default 120)
   --priority N              host priority of the plugin (default 10, see below)
   --force                   overwrite a DIFFERENT existing dylib of the same name
   --dry-run                 validate and print the plan; touch nothing
@@ -81,6 +82,7 @@ alias_name="tierbridge/auto"
 budget="0"
 cooldown="60"
 attempts="3"
+deadline="120"
 priority="10"
 force=0
 dry=0
@@ -95,6 +97,7 @@ while [[ $# -gt 0 ]]; do
     --daily-budget-usd) need_val "$@"; budget=$2; shift 2 ;;
     --cooldown-seconds) need_val "$@"; cooldown=$2; shift 2 ;;
     --max-attempts) need_val "$@"; attempts=$2; shift 2 ;;
+    --deadline-seconds) need_val "$@"; deadline=$2; shift 2 ;;
     --priority) need_val "$@"; priority=$2; shift 2 ;;
     --force) force=1; shift ;;
     --dry-run) dry=1; shift ;;
@@ -112,7 +115,8 @@ done
 [[ $alias_name =~ ^[A-Za-z0-9._/:-]+$ ]] || die "--alias may only contain letters, digits and . _ / : -"
 [[ $budget =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "--daily-budget-usd must be a non-negative number"
 [[ $cooldown =~ ^[0-9]+$ ]] || die "--cooldown-seconds must be a non-negative integer"
-[[ $attempts =~ ^[1-9][0-9]*$ ]] || die "--max-attempts must be a positive integer"
+[[ $attempts =~ ^[1-9][0-9]*$ && $attempts -le 50 ]] || die "--max-attempts must be an integer from 1 to 50"
+[[ $deadline =~ ^[0-9]+$ ]] || die "--deadline-seconds must be a non-negative integer (0 = none)"
 [[ $priority =~ ^-?[0-9]+$ ]] || die "--priority must be an integer"
 
 [[ -f $dylib ]] || die "dylib not found: $dylib"
@@ -282,11 +286,13 @@ cat <<EOF
     tierbridge:
       enabled: true
       priority: $priority   # low on purpose: chain = priority desc, then id asc; we only answer the alias
+      # tierbridge-router/2 host mode file, generated with: tierbridge export cpa-router --model-prefix '' (live ids)
       router-file: $(yq "$router_file")
       alias: $(yq "$alias_name")
       daily-budget-usd: $budget
       cooldown-seconds: $cooldown
-      max-attempts: $attempts   # not read by plugin v$version today (unknown keys are ignored); kept for the host/future use
+      max-attempts: $attempts   # candidates tried per request (1-50)
+      deadline-seconds: $deadline   # overall per-request deadline, all attempts; 0 = none
       decisions-keep: 50
       state-path: $(yq "$state_path")
 # ---- end ----

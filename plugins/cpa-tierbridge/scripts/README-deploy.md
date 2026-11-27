@@ -4,7 +4,7 @@
 exercised against a fake home under `mktemp`; nobody has run them against the real instance.
 
 - `deploy-live.sh --router-file PATH [--dylib PATH] [--cpa-home DIR] [--alias A] [--daily-budget-usd N]
-  [--cooldown-seconds N] [--max-attempts N] [--priority N] [--force] [--dry-run]`
+  [--cooldown-seconds N] [--max-attempts N] [--deadline-seconds N] [--priority N] [--force] [--dry-run]`
   backs up `config.yaml` to `config.yaml.bak.<UTC ts>` (`cp -p`, never overwrites), copies the dylib to
   `<plugins.dir>/darwin/arm64/tierbridge-v<semver>.dylib` (a different existing file needs `--force`; the
   old one is kept in the state dir), writes a JSON-lines manifest (no secrets) to
@@ -18,7 +18,9 @@ exercised against a fake home under `mktemp`; nobody has run them against the re
   summary, and with `--yes` restores the backed-up `config.yaml` (`cp -p`) and removes only the dylib the manifest
   records, and only if its sha256 still matches (a file replaced with `--force` is put back). Restart/reload is
   the controller's job. Neither script touches the live config without that explicit step.
-- `max-attempts` appears in the printed block, but plugin v0.1.0 does not read it (unknown keys are ignored).
+- `max-attempts` and `deadline-seconds` (flags `--max-attempts`, `--deadline-seconds`; defaults 3 and 120) are printed
+  in the block; the plugin reads both. The router file must be `tierbridge-router/2` host mode, generated with
+  `export cpa-router --model-prefix ''` (live ids).
 
 ## Self-test
 
