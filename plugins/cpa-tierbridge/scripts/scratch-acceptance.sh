@@ -301,7 +301,7 @@ chat_stream() {
 }
 # last_decision JQ-FILTER -> prints the filter applied to the newest /decisions entry
 last_decision() { mgmt "/v0/management/tierbridge/decisions" auth; jq -c ".decisions[0] | $1" "$MBODY" 2>/dev/null | redact | cut -c1-420; }
-attempts_of() { last_decision '[.attempts[]? | {rank,model,status,ok,fallback,coolingDown}]'; }
+attempts_of() { last_decision '[.attempts[]? | {rank,model,status,ok,fallback,coolingDown,error:(.error // "" | .[0:70])}]'; }
 
 need_mgmt() { # endpoint check-name: fetch it into MBODY; on non-200 FAIL (REQUIRE_MGMT=1) or WARN and return 1
   mgmt "/v0/management/tierbridge/$1" auth
@@ -457,17 +457,26 @@ fi
 
 # (10) streaming (needs the streaming executor)
 if [ "$STREAM" = 1 ]; then
+  sse_head() { head -c 160 "$BODY" | redact | tr '\n' ' '; }
   write_router "$TMP/router.json" "$GOOD_ROUTER"
   chat_stream "$ALIAS"
-  if [ "$CODE" = 200 ] && [ "$NCHUNK" -ge 2 ] && [ "$DONE" = 1 ]; then pass stream "stream:true alias -> 200, $NCHUNK SSE data lines, [DONE] seen; attempts $(attempts_of)"; else fail stream "http $CODE chunks=$NCHUNK done=$DONE $(head -c 200 "$BODY" | redact | tr '\n' ' ')"; fi
-  write_router "$TMP/router.json" "$(jq -c --argjson bad "$BAD_CAND" '[$bad] + .' <<<"$(sel_json)")"
+  if [ "$CODE" = 200 ] && [ "$NCHUNK" -ge 2 ] && [ "$DONE" = 1 ]; then
+    pass stream "stream:true alias -> 200, $NCHUNK SSE data lines, [DONE]; winning $(attempts_of); first bytes: $(sse_head)"
+  else
+    fail stream "http $CODE chunks=$NCHUNK done=$DONE $(sse_head)"
+  fi
+  # a different nonexistent model: the one used by the non-stream fallback check is on cooldown by now and would be skipped
+  BAD_CAND_S="$(jq -c --arg m "${ALIAS_PREFIX}does-not-exist-stream" '.model=$m | .id="does-not-exist-stream"' <<<"$BAD_CAND")"
+  write_router "$TMP/router.json" "$(jq -c --argjson bad "$BAD_CAND_S" '[$bad] + .' <<<"$(sel_json)")"
   chat_stream "$ALIAS"
   att="$(attempts_of)"
-  if [ "$CODE" = 200 ] && [ "$NCHUNK" -ge 2 ] && [ "$DONE" = 1 ] && jq -e '.[0].ok == false and .[1].ok == true' <<<"$att" >/dev/null 2>&1; then
-    pass stream-fallback "nonexistent first: fell back before the first chunk, $NCHUNK chunks; $att"
+  if [ "$CODE" = 200 ] && [ "$NCHUNK" -ge 2 ] && [ "$DONE" = 1 ] && jq -e '.[0].ok == false and .[0].fallback == true and .[1].ok == true' <<<"$att" >/dev/null 2>&1; then
+    pass stream-fallback "nonexistent first: fell back before the first chunk, client saw a normal SSE stream ($NCHUNK chunks); $att; first bytes: $(sse_head)"
   else
-    fail stream-fallback "http $CODE chunks=$NCHUNK done=$DONE attempts=$att"
+    fail stream-fallback "http $CODE chunks=$NCHUNK done=$DONE attempts=$att first bytes: $(sse_head)"
   fi
+  chat_stream "$MODEL_B"
+  if [ "$CODE" = 200 ] && [ "$NCHUNK" -ge 2 ] && [ "$DONE" = 1 ]; then pass stream-non-alias "$MODEL_B stream:true -> 200, $NCHUNK chunks (plugin not involved)"; else fail stream-non-alias "http $CODE chunks=$NCHUNK done=$DONE $(sse_head)"; fi
 else
   warn stream "pending: no 'streaming executor' commit in ${PLUGIN_REF:-HEAD} (set STREAM=1 to force)"
 fi
