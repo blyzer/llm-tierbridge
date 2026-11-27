@@ -9,6 +9,7 @@ mod fetch;
 mod git;
 mod index;
 mod init;
+mod launchd;
 mod report;
 mod run;
 mod sources;
@@ -29,6 +30,11 @@ pub enum SyncCommand {
     /// `git pull --ff-only` the data repo, then apply its `overrides/omp.yml` to omp's `models.yml`
     /// (backup, idempotent). The manual step: nothing applies itself.
     Apply(apply::ApplyArgs),
+    /// Write the daily launchd job (`~/Library/LaunchAgents/dev.blyzer.llm-tierbridge.sync.plist`)
+    /// and its Keychain-loading wrapper, then load it. `--dry-run` only prints them.
+    InstallLaunchd(launchd::InstallArgs),
+    /// Unload and remove the launchd job and its wrapper (the logs stay).
+    UninstallLaunchd(launchd::UninstallArgs),
 }
 
 pub fn dispatch(command: &SyncCommand) -> Result<(), Failure> {
@@ -36,5 +42,7 @@ pub fn dispatch(command: &SyncCommand) -> Result<(), Failure> {
         SyncCommand::Init(args) => init::init(args),
         SyncCommand::Run(args) => run::run(args),
         SyncCommand::Apply(args) => apply::apply(args),
+        SyncCommand::InstallLaunchd(args) => launchd::install(args),
+        SyncCommand::UninstallLaunchd(args) => launchd::uninstall(args),
     }
 }
