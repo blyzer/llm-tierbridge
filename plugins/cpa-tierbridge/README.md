@@ -37,20 +37,23 @@ and the error is kept for the management status (`Handler.Status()`).
 
 ## Router file
 
-An object with a `candidates` array (a bare array works too), best first: the array order is the rank.
-See `testdata/router.sample.json` and the package comment of `internal/routerfile`.
+`tierbridge-router.json`, schema `tierbridge-router/1`, written by `tierbridge export cpa-router`:
+`{schema, catalogSha256, quotaSourceSha256, gateway, aliases:[{alias, profile, skipped, candidates:[...]}]}`.
+The profile is per alias and the provider per candidate; the candidates of an alias are best first (the
+array order is the rank); an alias may have no candidates (valid: every route then falls through with a
+Reason). Unknown keys are ignored at every level. The plugin serves the alias entry whose name equals
+the configured `alias`; a file without it falls through with `router file has no alias "<alias>"`.
+See `testdata/router.sample.json` and the package comment of `internal/routerfile` for every field.
 
-```json
-{"version": 1, "candidates": [
-  {"provider": "openai", "model": "gpt-4.1", "contextWindow": 1047576,
-   "supportsTools": true, "input": ["text", "image"], "rpm": 500, "rpd": null}
-]}
-```
-
-A candidate fits when the estimated prompt (text bytes / 4) is within `contextWindow` (null = unknown =
-fits), it supports tools if the request declares any, it takes images if the request has any, its
-provider is in the host's `AvailableProviders` (when that list is non-empty), and its `rpm`/`rpd` quota and
-the daily budget allow one more request. `Reason` reads `rank N of M`, plus the skipped candidates.
+Per candidate the plugin routes to `Target = provider`, `TargetModel = model` (the name the provider
+knows, i.e. the exported openai-compatibility alias; `id`/`key` are informational). A candidate fits when
+the estimated prompt (text bytes / 4) is within `contextWindow` (null = unknown = fits), it supports tools
+if the request declares any (`supportsTools` null = no), it takes images if the request has any
+(`input` null = text only), its provider is in the host's `AvailableProviders` (when that list is
+non-empty), and its `quota.rpm`/`quota.rpd` and the daily budget allow one more request. `Reason` reads
+`rank N of M`, plus the skipped candidates. Candidates with `cost.status` unknown (or null prices) are
+unpriced: budget math counts them as 0 and the status flags them (`aliases[].unpriced`,
+`decisions[].unpriced`). The status revision is `catalogSha256` plus the file's sha256 and mtime.
 
 ## Status of the slice
 

@@ -14,14 +14,19 @@ import (
 
 var clock = time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 
-const rankingJSON = `{"version":1,"candidates":[
+const rankingJSON = `{"schema":"tierbridge-router/1","catalogSha256":"abc123","aliases":[{"alias":"tierbridge/auto","profile":"free-first","candidates":[
  {"provider":"small","model":"s","contextWindow":100,"supportsTools":true,"input":["text","image"]},
  {"provider":"notools","model":"n","contextWindow":100000,"supportsTools":false,"input":["text","image"]},
  {"provider":"textonly","model":"t","contextWindow":100000,"supportsTools":true,"input":["text"]},
  {"provider":"big","model":"b","contextWindow":1000000,"supportsTools":true,"input":["text","image"]}
-]}`
+]}]}`
 
 const aliasModel = "tierbridge/auto"
+
+// wrap puts candidate JSON into a valid router file holding the default alias.
+func wrap(candidates string) string {
+	return `{"schema":"tierbridge-router/1","catalogSha256":"abc123","aliases":[{"alias":"tierbridge/auto","profile":"free-first","candidates":[` + candidates + `]}]}`
+}
 
 // chatBody builds an OpenAI chat body with text of the given size; extra is spliced in as top-level JSON.
 func chatBody(textBytes int, extra string) string {
@@ -199,9 +204,8 @@ func TestRouteRecordsDecisionsOnlyForTheAlias(t *testing.T) {
 }
 
 func TestRouteRPMOneSkipsTheCandidateOnTheSecondRequest(t *testing.T) {
-	limited := `{"candidates":[
-	 {"provider":"free","model":"f","rpm":1},
-	 {"provider":"paid","model":"p"}]}`
+	limited := wrap(`{"provider":"free","model":"f","quota":{"rpm":1}},
+	 {"provider":"paid","model":"p"}`)
 	h, _ := newPlugin(t, limited, "")
 	first := route(t, h, aliasModel, chatBody(40, ""), nil)
 	second := route(t, h, aliasModel, chatBody(40, ""), nil)
@@ -247,7 +251,7 @@ func TestRouteWithoutUsableRouterFile(t *testing.T) {
 		}
 	})
 	t.Run("invalid first version", func(t *testing.T) {
-		h, _ := newPlugin(t, `{"candidates":[`, "")
+		h, _ := newPlugin(t, `{"schema":"tierbridge-router/1","aliases":[`, "")
 		got := route(t, h, aliasModel, chatBody(40, ""), nil)
 		if got.Handled {
 			t.Errorf("response = %+v, want Handled:false", got)
@@ -262,19 +266,19 @@ func TestInvalidRouterFileKeepsThePreviousVersion(t *testing.T) {
 	}
 
 	// A valid new version takes effect on the next call.
-	writeFile(t, path, `{"candidates":[{"provider":"fresh","model":"f"}]}`, clock.Add(time.Minute))
+	writeFile(t, path, wrap(`{"provider":"fresh","model":"f"}`), clock.Add(time.Minute))
 	if got := route(t, h, aliasModel, chatBody(40, ""), nil); got.Target != "fresh" {
 		t.Fatalf("reloaded target = %q, want fresh", got.Target)
 	}
 
 	// An invalid one is rejected: the previous ranking keeps serving and the error is kept.
-	writeFile(t, path, `{"candidates":[{"provider":"broken"}]}`, clock.Add(2*time.Minute))
+	writeFile(t, path, wrap(`{"provider":"broken"}`), clock.Add(2*time.Minute))
 	got := route(t, h, aliasModel, chatBody(40, ""), nil)
 	if !got.Handled || got.Target != "fresh" {
 		t.Fatalf("after an invalid file response = %+v, want the previous ranking", got)
 	}
 	st := h.Status()
-	if !strings.Contains(st.Router.Error, "provider and model are required") || st.Router.Candidates != 1 {
+	if !strings.Contains(st.Router.Error, "provider and model are required") || len(st.Router.Aliases) != 1 || st.Router.Aliases[0].Candidates != 1 {
 		t.Errorf("Status().Router = %+v", st.Router)
 	}
 
@@ -375,8 +379,13 @@ func TestReconfigure(t *testing.T) {
 	if got := route(t, h, aliasModel, chatBody(40, ""), nil); got.Handled {
 		t.Errorf("old alias still handled: %+v", got)
 	}
-	if got := route(t, h, "my/auto", chatBody(40, ""), nil); !got.Handled {
-		t.Errorf("new alias not handled: %+v", got)
+	// The renamed alias is answered by the plugin, but the router file must define it.
+	if got := route(t, h, "my/auto", chatBody(40, ""), nil); got.Handled || got.Reason != `router file has no alias "my/auto"` {
+		t.Errorf("new alias without an entry = %+v, want Handled:false", got)
+	}
+	writeFile(t, path, strings.Replace(rankingJSON, `"alias":"tierbridge/auto"`, `"alias":"my/auto"`, 1), clock.Add(time.Hour))
+	if got := route(t, h, "my/auto", chatBody(40, ""), nil); !got.Handled || got.Target != "small" {
+		t.Errorf("new alias with an entry = %+v, want small/s", got)
 	}
 }
 
@@ -483,5 +492,52 @@ func TestGoldenErrorEnvelope(t *testing.T) {
 	const want = `{"ok":false,"error":{"code":"unknown_method","message":"unknown method: nope"}}`
 	if got != want {
 		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestAliasEntryInTheRouterFile(t *testing.T) {
+	multi := `{"schema":"tierbridge-router/1","catalogSha256":"c1","aliases":[
+	 {"alias":"tierbridge/empty","profile":"free-first","candidates":[]},
+	 {"alias":"tierbridge/auto","profile":"quality","candidates":[{"provider":"p","model":"m","id":"upstream","extra":true}]}]}`
+	h, _ := newPlugin(t, multi, "")
+	if got := route(t, h, aliasModel, chatBody(40, ""), nil); !got.Handled || got.Target != "p" || got.TargetModel != "m" {
+		t.Errorf("response = %+v, want p/m from the matching alias entry", got)
+	}
+
+	// An alias with no candidates is valid and falls through with a Reason.
+	h.Handle(wire.MethodPluginReconfigure, lifecycle(t, h.routerFileYAML()+"alias: tierbridge/empty\n"))
+	got := route(t, h, "tierbridge/empty", chatBody(40, ""), nil)
+	if got.Handled || got.Reason != "no candidates" {
+		t.Errorf("empty alias response = %+v, want Handled:false and Reason \"no candidates\"", got)
+	}
+
+	// A configured alias the file does not define falls through and says so.
+	h.Handle(wire.MethodPluginReconfigure, lifecycle(t, h.routerFileYAML()+"alias: tierbridge/other\n"))
+	got = route(t, h, "tierbridge/other", chatBody(40, ""), nil)
+	if got.Handled || got.Reason != `router file has no alias "tierbridge/other"` {
+		t.Errorf("missing alias response = %+v", got)
+	}
+}
+
+func (h *Handler) routerFileYAML() string {
+	cfg, _ := h.config()
+	return fmt.Sprintf("router-file: %q\n", cfg.RouterFile)
+}
+
+func TestStatusRevisionAndUnpriced(t *testing.T) {
+	h, _ := newPlugin(t, wrap(`{"provider":"p","model":"m","cost":{"status":"unknown","input":null,"output":null}},{"provider":"q","model":"n","cost":{"status":"free","input":0,"output":0}}`), "")
+	got := route(t, h, aliasModel, chatBody(40, ""), nil)
+	if !got.Handled || got.Target != "p" {
+		t.Fatalf("response = %+v", got)
+	}
+	st := h.Status()
+	if st.Router.Revision.CatalogSHA256 != "abc123" || len(st.Router.Revision.FileSHA256) != 64 {
+		t.Errorf("revision = %+v", st.Router.Revision)
+	}
+	if len(st.Router.Aliases) != 1 || st.Router.Aliases[0].Unpriced != 1 || st.Router.Aliases[0].Profile != "free-first" {
+		t.Errorf("aliases = %+v, want 1 unpriced flagged", st.Router.Aliases)
+	}
+	if len(st.Decisions) != 1 || !st.Decisions[0].Unpriced {
+		t.Errorf("decisions = %+v, want the unpriced pick flagged", st.Decisions)
 	}
 }

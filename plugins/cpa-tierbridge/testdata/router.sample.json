@@ -1,11 +1,29 @@
 {
-  "version": 1,
-  "generatedAt": "2026-11-27T12:00:00Z",
-  "candidates": [
-    {"provider": "openai", "model": "gpt-4.1", "contextWindow": 1047576, "supportsTools": true, "input": ["text", "image"], "rpm": 500, "rpd": null},
-    {"provider": "claude", "model": "claude-sonnet-4-5", "contextWindow": 200000, "supportsTools": true, "input": ["text", "image"], "rpm": null, "rpd": null},
-    {"provider": "gemini", "model": "gemini-2.5-flash", "contextWindow": 1048576, "supportsTools": true, "input": ["text", "image"], "rpm": 10, "rpd": 250},
-    {"provider": "openai", "model": "gpt-4.1-mini", "contextWindow": 1047576, "supportsTools": true, "input": ["text", "image"], "rpm": 500, "rpd": null},
-    {"provider": "codex", "model": "gpt-5-codex", "contextWindow": null, "supportsTools": null, "input": ["text"], "rpm": null, "rpd": null}
+  "schema": "tierbridge-router/1",
+  "catalogSha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "quotaSourceSha256": "absent",
+  "gateway": "omp-live:gw",
+  "aliases": [
+    {
+      "alias": "tierbridge/auto",
+      "profile": "free-first",
+      "skipped": {"noPrice": 1},
+      "candidates": [
+        {"model": "tb-llama-70b", "provider": "openai-compatible-gw", "id": "llama-70b", "key": "omp-live:gw:gw/llama-70b",
+         "contextWindow": 131072, "maxTokens": 8192, "supportsTools": true, "input": ["text"],
+         "cost": {"status": "free", "input": 0.0, "output": 0.0}, "confidence": "declared",
+         "quota": {"rpm": 30, "rpd": 14400, "tpm": 6000, "tpd": 500000, "monthlyTokenBudget": "~30M", "source": "freellmapi:groq/llama-70b", "matchedBy": "canonicalId", "matches": 1},
+         "reasons": ["known-free", "freellmapi-limits"]},
+        {"model": "tb-gemini-flash", "provider": "openai-compatible-gw", "id": "gemini-2.5-flash", "key": "omp-live:gw:gw/gemini-2.5-flash",
+         "contextWindow": 1048576, "maxTokens": 65536, "supportsTools": true, "input": ["text", "image"],
+         "cost": {"status": "known", "input": 0.3, "output": 2.5}, "confidence": "declared",
+         "quota": null, "reasons": ["known-price"]},
+        {"model": "tb-mystery", "provider": "openai-compatible-gw", "id": "mystery-1", "key": "omp-live:gw:gw/mystery-1",
+         "contextWindow": null, "maxTokens": null, "supportsTools": null, "input": null,
+         "cost": {"status": "unknown", "input": null, "output": null}, "confidence": "declared",
+         "quota": null, "reasons": []}
+      ]
+    },
+    {"alias": "tierbridge/empty", "profile": "free-first", "skipped": {}, "candidates": []}
   ]
 }

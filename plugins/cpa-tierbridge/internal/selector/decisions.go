@@ -18,6 +18,8 @@ type Decision struct {
 	Model    string `json:"model,omitempty"`
 	Rank     int    `json:"rank,omitempty"`
 	Of       int    `json:"of,omitempty"`
+	// Unpriced marks a pick whose price is unknown: budget math counts it as 0.
+	Unpriced bool   `json:"unpriced,omitempty"`
 	Reason   string `json:"reason"`
 	Skips    []Skip `json:"skips,omitempty"`
 }

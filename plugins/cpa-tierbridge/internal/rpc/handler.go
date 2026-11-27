@@ -251,9 +251,13 @@ func (h *Handler) route(request []byte) (resp wire.ModelRouteResponse) {
 		}
 		return h.unhandled(requested, est, reason)
 	}
+	entry := file.Alias(cfg.Alias)
+	if entry == nil {
+		return h.unhandled(requested, est, fmt.Sprintf("router file has no alias %q", cfg.Alias))
+	}
 
 	now := h.now()
-	out := selector.Select(est, file.Candidates, req.AvailableProviders, h.limiter, now)
+	out := selector.Select(est, entry.Candidates, req.AvailableProviders, h.limiter, now)
 	reason := out.Reason()
 	h.record(requested, est, out, reason)
 	if out.Picked == nil {
@@ -287,6 +291,7 @@ func (h *Handler) record(requested string, est estimate.Request, out selector.Ou
 	}
 	if out.Picked != nil {
 		d.Handled, d.Provider, d.Model, d.Rank = true, out.Picked.Provider, out.Picked.Model, out.Rank
+		d.Unpriced = out.Picked.Unpriced()
 	}
 	h.decisions.Add(d)
 }
