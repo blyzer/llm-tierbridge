@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-27T12:00:00Z",
+  "candidates": [
+    {"provider": "openai", "model": "gpt-4.1", "contextWindow": 1047576, "supportsTools": true, "input": ["text", "image"], "rpm": 500, "rpd": null},
+    {"provider": "claude", "model": "claude-sonnet-4-5", "contextWindow": 200000, "supportsTools": true, "input": ["text", "image"], "rpm": null, "rpd": null},
+    {"provider": "gemini", "model": "gemini-2.5-flash", "contextWindow": 1048576, "supportsTools": true, "input": ["text", "image"], "rpm": 10, "rpd": 250},
+    {"provider": "openai", "model": "gpt-4.1-mini", "contextWindow": 1047576, "supportsTools": true, "input": ["text", "image"], "rpm": 500, "rpd": null},
+    {"provider": "codex", "model": "gpt-5-codex", "contextWindow": null, "supportsTools": null, "input": ["text"], "rpm": null, "rpd": null}
+  ]
+}
