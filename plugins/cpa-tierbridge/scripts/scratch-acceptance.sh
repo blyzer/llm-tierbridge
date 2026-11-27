@@ -24,8 +24,8 @@
 #   REQUIRE_MGMT=1  treat a 404 on /v0/management/tierbridge/* as FAIL (default: WARN, the route may
 #              not be in the build under test)
 #   PLUGIN_REF git ref to build the plugin from (e.g. HEAD) instead of the working tree
-#   FAIL_UPSTREAM_ID  optional served id that the upstream fails today (429/5xx): adds the check where the
-#              routed model exists but errors upstream (one more request)
+#   FAIL_UPSTREAM_ID  optional served id that the upstream fails today (429/5xx): adds the cooldown check
+#              (the routed model errors upstream, the NEXT alias request must skip it; two more requests)
 #   VERBOSE=1  also print redacted log excerpts (plugin lines, host lines around the failure checks)
 #
 # Output: one compact PASS/FAIL/WARN/INFO line per check. Exit 1 if any FAIL. No secret is printed.
@@ -331,55 +331,182 @@ for ep in status candidates counters budget decisions; do
     fail "mgmt-$ep" "with=$w without=$n"
   fi
 done
-mgmt /v0/management/tierbridge/status auth
-if [ "$MCODE" = 200 ]; then info usage-models "status.lastUsageModels=$(jq -c '.lastUsageModels // "absent"' "$MBODY" 2>/dev/null | redact | cut -c1-200)"; fi
-mgmt "/v0/management/usage-queue?count=20" auth   # host usage records (what the plugin's usage hook also sees)
-if [ "$MCODE" = 200 ]; then
-  info usage-models "host usage-queue: $(jq -c '[.. | objects | (.model? // .alias? // empty) | strings] | unique | .[0:8]' "$MBODY" 2>/dev/null | redact | cut -c1-240)"
-else
-  info usage-models "GET usage-queue -> $MCODE"
+dump_mgmt() { # label: VERBOSE only; compact redacted bodies of the tierbridge management routes
+  [ "$VERBOSE" = 1 ] || return 0
+  local ep
+  for ep in status candidates counters budget decisions; do
+    mgmt "/v0/management/tierbridge/$ep" auth
+    echo "      | [$1] $ep -> $MCODE $(jq -c . "$MBODY" 2>/dev/null | redact | cut -c1-1800)"
+  done
+}
+dump_mgmt after-requests
+
+need_mgmt() { # endpoint check-name: fetch it into MBODY; on non-200 FAIL (REQUIRE_MGMT=1) or WARN and return 1
+  mgmt "/v0/management/tierbridge/$1" auth
+  [ "$MCODE" = 200 ] && return 0
+  if [ "$REQUIRE_MGMT" = 1 ]; then fail "$2" "GET $1 -> $MCODE"; else warn "$2" "GET $1 -> $MCODE (route not in this build)"; fi
+  return 1
+}
+PROVIDER="$(jq -r '.provider' <<<"$CAND_A")"
+FAIL_MODEL="${ALIAS_PREFIX}${FAIL_UPSTREAM_ID:-}"
+
+# (b) the usage records exactly as the host sends them, and whether the plugin matched them
+if need_mgmt status usage-match; then
+  info usage-records "lastUsageModels (newest first): $(jq -c '[.lastUsageModels[]? | {model,alias,provider,failed,status,tokens,matched}]' "$MBODY" | redact | cut -c1-900)"
+  if jq -e --arg a "$ALIAS" --arg id "$ID_A" --arg p "$PROVIDER" \
+    '[.lastUsageModels[]? | select(.alias == $a and .model == $id and .provider == $p and .matched == true)] | length > 0' "$MBODY" >/dev/null; then
+    pass usage-match "routed request: Model=$ID_A Alias=$ALIAS Provider=$PROVIDER matched=true (host sends the upstream id, not the tb- name)"
+  else
+    fail usage-match "no matched record with alias=$ALIAS model=$ID_A provider=$PROVIDER"
+  fi
 fi
+# (c) counters of the chosen model (A: alias request + the non-alias request)
+if need_mgmt counters counters-used; then
+  row="$(jq -c --arg m "$MODEL_A" '[.models[]? | select(.model == $m)][0] // {} | {rpm,rpd,tpm,tpd}' "$MBODY")"
+  if jq -e '.rpm.used >= 1 and .rpm.limit == 1 and .rpd.used >= 1 and .tpm.used > 0 and .tpd.used > 0' <<<"$row" >/dev/null 2>&1; then
+    pass counters-used "$MODEL_A $(jq -c '{rpm:.rpm.used,rpmLimit:.rpm.limit,rpd:.rpd.used,tpm:.tpm.used,tpd:.tpd.used}' <<<"$row")"
+  else
+    fail counters-used "$MODEL_A row=$row"
+  fi
+fi
+# (e) budget
+if need_mgmt budget budget; then
+  if jq -e '.dailyBudgetUsd == 1 and (.spentUsd | type) == "number" and .remainingUsd <= 1' "$MBODY" >/dev/null 2>&1; then
+    pass budget "$(jq -c '{day,dailyBudgetUsd,spentUsd,remainingUsd,unpriced}' "$MBODY" | cut -c1-200)"
+  else
+    fail budget "$(jq -c . "$MBODY" | cut -c1-200)"
+  fi
+fi
+# decisions: request 2 skipped A for rpm
+if need_mgmt decisions decisions-rpm; then
+  if jq -e --arg m "$MODEL_B" --arg a "$MODEL_A" \
+    '[.decisions[]? | select(.chosen.model == $m and ([.skipped[]? | select(.model == $a and .reason == "rpm")] | length > 0))] | length > 0' "$MBODY" >/dev/null 2>&1; then
+    pass decisions-rpm "chose $MODEL_B, skipped $MODEL_A (rpm)"
+  else
+    fail decisions-rpm "$(jq -c '[.decisions[]? | {chosen: .chosen.model, reason}]' "$MBODY" | cut -c1-300)"
+  fi
+fi
+usage_queue() {
+  mgmt "/v0/management/usage-queue?count=20" auth   # host usage records (what the plugin's usage hook also sees)
+  if [ "$MCODE" = 200 ]; then
+    info usage-queue "host usage-queue models: $(jq -c '[.. | objects | (.model? // .alias? // empty) | strings] | unique | .[0:8]' "$MBODY" 2>/dev/null | redact | cut -c1-240)"
+  else
+    info usage-queue "GET usage-queue -> $MCODE"
+  fi
+}
+usage_queue
 
 # (6a) routed model fails: top candidate is a model the provider does not have
 BAD1="${ALIAS_PREFIX}does-not-exist"
 write_router "$TMP/router.json" "$(jq -c --arg m "$BAD1" '[(.[0] | .model=$m | .id="does-not-exist" | .quota=null)] + .' <<<"$(sel_json)")"
 M=$(logmark)
 chat "$ALIAS"
-n_bad="$(logsince "$M" | grep -c "does-not-exist" || true)"
-info fail-routed "A: top=$BAD1 (no quota) -> http $CODE model=${RMODEL:-none} $(errsum); host log lines naming it: $n_bad"
+info fail-routed "A: top=$BAD1 (no quota) -> http $CODE model=${RMODEL:-none} $(errsum)"
 excerpt "$M" 'does-not-exist|model_not_found|route|retry|auth_not_found' 12
-# (6b) same, but the bad candidate has rpm 1: a router RE-ASK would skip it and reach B
+# (6b) same, but the bad candidate has rpm 1: a router RE-ASK would skip it and reach the next candidate (A)
 BAD2="${ALIAS_PREFIX}does-not-exist-2"
 write_router "$TMP/router.json" "$(jq -c --arg m "$BAD2" '[(.[0] | .model=$m | .id="does-not-exist-2" | .quota={rpm:1,rpd:null})] + .' <<<"$(sel_json)")"
 M=$(logmark)
 chat "$ALIAS"
 info fail-reask "B: top=$BAD2 (rpm 1) -> http $CODE model=${RMODEL:-none} $(errsum)"
 excerpt "$M" 'does-not-exist|model_not_found|route|retry|auth_not_found' 12
-if [ "$CODE" = 200 ] && [ "$RMODEL" = "$ID_B" ]; then
-  info fail-reask "client got 200 from $ID_B: the router was asked again (or the host fell back) after the failure"
+if [ "$CODE" = 200 ] && [ "$RMODEL" = "$ID_A" ]; then
+  info fail-reask "client got 200 from $ID_A: the router was asked again (or the host fell back) after the failure"
 else
   info fail-reask "client did not get a fallback answer: the router is not re-asked for the same request"
 fi
-# (6c) optional: the routed model EXISTS in the provider but the upstream fails it (set FAIL_UPSTREAM_ID to an
-# id that errors today, e.g. one answering 429/5xx). rpm 1 again discriminates a router re-ask.
+
+# (d) cooldown: the routed model EXISTS but the upstream fails it (FAIL_UPSTREAM_ID: an id answering 429/5xx today).
+# Request 1 hits it and fails; the NEXT alias request must skip it with reason "cooldown".
 if [ -n "${FAIL_UPSTREAM_ID:-}" ]; then
-  write_router "$TMP/router.json" "$(jq -c --arg id "$FAIL_UPSTREAM_ID" --arg m "${ALIAS_PREFIX}${FAIL_UPSTREAM_ID}" '[(.[0] | .model=$m | .id=$id | .quota={rpm:1,rpd:null})] + .' <<<"$(sel_json)")"
+  write_router "$TMP/router.json" "$(jq -c --arg id "$FAIL_UPSTREAM_ID" --arg m "$FAIL_MODEL" '[(.[0] | .model=$m | .id=$id | .quota=null)] + .' <<<"$(sel_json)")"
   M=$(logmark)
   chat "$ALIAS"
-  info fail-upstream "top=${ALIAS_PREFIX}$FAIL_UPSTREAM_ID (rpm 1, upstream errors) -> http $CODE model=${RMODEL:-none} $(errsum)"
-  excerpt "$M" "$FAIL_UPSTREAM_ID|retry|route|error|status" 14
-  if [ "$CODE" = 200 ] && [ "$RMODEL" = "$ID_B" ]; then
-    info fail-upstream "client got 200 from $ID_B: router re-asked or host fell back after the upstream error"
-  else
-    info fail-upstream "no fallback: the upstream error reached the client; the router was not re-asked"
+  info fail-upstream "top=$FAIL_MODEL (upstream errors) -> http $CODE model=${RMODEL:-none} $(errsum); the router is not re-asked, the error reaches the client"
+  excerpt "$M" "$FAIL_UPSTREAM_ID|retry|route|status" 14
+  if need_mgmt status usage-failed; then
+    info usage-records "failed record: $(jq -c '[.lastUsageModels[]? | select(.failed)][0] // "none" | if type == "object" then {model,alias,provider,failed,status,matched} else . end' "$MBODY" | redact | cut -c1-300)"
   fi
+  for _ in $(seq 1 12); do   # the usage record reaches the plugin asynchronously
+    mgmt "/v0/management/tierbridge/counters" auth
+    jq -e --arg m "$FAIL_MODEL" '[.models[]? | select(.model == $m and .cooldownRemainingSeconds > 0)] | length > 0' "$MBODY" >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+  chat "$ALIAS"
+  if [ "$CODE" = 200 ] && [ "$RMODEL" = "$ID_A" ]; then
+    mgmt "/v0/management/tierbridge/decisions" auth
+    if jq -e --arg f "$FAIL_MODEL" --arg a "$MODEL_A" \
+      '.decisions[0] | .chosen.model == $a and ([.skipped[]? | select(.model == $f and .reason == "cooldown")] | length > 0)' "$MBODY" >/dev/null 2>&1; then
+      pass cooldown "next alias request skipped $FAIL_MODEL (reason cooldown) -> $ID_A; $(jq -c '.decisions[0] | {reason}' "$MBODY" | cut -c1-200)"
+    else
+      fail cooldown "200 from $ID_A but decisions[0]=$(jq -c '.decisions[0] | {chosen: .chosen.model, reason, skipped}' "$MBODY" 2>/dev/null | cut -c1-300)"
+    fi
+  else
+    fail cooldown "2nd request: http $CODE model=${RMODEL:-none} $(errsum) (want 200 from $ID_A)"
+  fi
+  mgmt "/v0/management/tierbridge/counters" auth
+  info cooldown "counters: $(jq -c --arg m "$FAIL_MODEL" '[.models[]? | select(.model == $m)][0] | {model, rpd, cooldownRemainingSeconds}' "$MBODY" 2>/dev/null | cut -c1-240)"
+else
+  warn cooldown "skipped: set FAIL_UPSTREAM_ID to a served id the upstream fails today"
 fi
+sleep 1.5   # let the usage record of the last request reach the plugin; the periodic flush is 5 s away
+mgmt "/v0/management/tierbridge/counters" auth
+LIVE_TPD_A="$(jq -r --arg m "$MODEL_A" '[.models[]? | select(.model == $m)][0].tpd.used // 0' "$MBODY" 2>/dev/null || echo 0)"
+mgmt "/v0/management/tierbridge/status" auth
+LIVE_PERSIST="$(jq -c '.persistence | {dirty, saves, lastSaveAt}' "$MBODY" 2>/dev/null || echo '{}')"
 stop_cpa
 
-# ================= phase 2: debug-force-error =================
+# (f) persistence. Right after SIGTERM: is the state file there, 0600, and does it hold what happened in this run?
+# (The host never sends the plugin.shutdown RPC, it calls the C shutdown hook; the plugin otherwise only writes
+# SaveInterval = 5 s after a change, so a stop right after the requests can lose counters and cooldowns.)
+ST="$TMP/state.json"
+state_mode() { stat -f '%Lp' "$ST" 2>/dev/null || stat -c '%a' "$ST"; }
+if [ -f "$ST" ]; then
+  mode="$(state_mode)"
+  if [ "$mode" = 600 ] && jq -e --arg m "$MODEL_A" \
+    '.version == 1 and ([.models | to_entries[] | select(.key | endswith($m)) | .value | select(.rpd >= 1)] | length > 0)' "$ST" >/dev/null 2>&1; then
+    pass persist-write "state.json mode $mode, $(jq -c '{version,day,models:(.models|length)}' "$ST")"
+  else
+    fail persist-write "mode=$mode content: $(jq -c '{version,day,keys:(.models|keys)}' "$ST" 2>/dev/null | cut -c1-300)"
+  fi
+  missing=""
+  file_tpd="$(jq -r --arg m "$MODEL_A" '[.models | to_entries[] | select(.key | endswith($m)) | .value.tpd] | first // 0' "$ST" 2>/dev/null || echo 0)"
+  [ "$file_tpd" = "$LIVE_TPD_A" ] || missing="$missing tpd($MODEL_A: file $file_tpd, live $LIVE_TPD_A)"
+  info persist-flush "just before SIGTERM (live status.persistence) $LIVE_PERSIST; file savedAt=$(jq -r '.savedAt' "$ST" 2>/dev/null)"
+  jq -e --arg m "$MODEL_B" '[.models | to_entries[] | select(.key | endswith($m))] | length > 0' "$ST" >/dev/null 2>&1 || missing="$missing model($MODEL_B)"
+  if [ -n "${FAIL_UPSTREAM_ID:-}" ]; then
+    jq -e --arg m "$FAIL_MODEL" '[.models | to_entries[] | select(.key | endswith($m)) | .value | select(.cooldownUntil != null and .cooldownUntil != "0001-01-01T00:00:00Z")] | length > 0' "$ST" >/dev/null 2>&1 || missing="$missing cooldown($FAIL_MODEL)"
+  fi
+  if [ -z "$missing" ]; then
+    pass persist-flush "state at SIGTERM holds the whole run (tpd, 2nd model, cooldown)"
+  elif [ "$REQUIRE_MGMT" = 1 ]; then
+    fail persist-flush "state at SIGTERM lacks:$missing (changes <5 s old are not flushed when the host stops)"
+  else
+    warn persist-flush "state at SIGTERM lacks:$missing (changes <5 s old are not flushed when the host stops)"
+  fi
+else
+  fail persist-write "no $ST after shutdown"
+fi
+
+# ================= phase 2: restart (state reload) + debug-force-error =================
 write_router "$TMP/router.json" "$GOOD_ROUTER"
 write_config true
 start_cpa
+if need_mgmt status persist-reload; then
+  if jq -e '.persistence.loaded == true' "$MBODY" >/dev/null 2>&1; then
+    pass persist-reload "$(jq -c '.persistence | {enabled,loaded}' "$MBODY")"
+  else
+    fail persist-reload "$(jq -c .persistence "$MBODY" | cut -c1-300)"
+  fi
+fi
+if need_mgmt counters counters-survive; then
+  row="$(jq -c --arg m "$MODEL_A" '[.models[]? | select(.model == $m)][0] // {} | {rpd,tpd}' "$MBODY")"
+  if jq -e '.rpd.used >= 1' <<<"$row" >/dev/null 2>&1; then
+    pass counters-survive "after restart $MODEL_A $(jq -c '{rpd:.rpd.used,tpd:.tpd.used}' <<<"$row")"
+  else
+    fail counters-survive "after restart $MODEL_A row=$row"
+  fi
+fi
 M=$(logmark)
 chat "$ALIAS"
 if [ "$CODE" = 400 ] && jq -e '(.error.code // "") == "model_not_found"' "$BODY" >/dev/null 2>&1; then
@@ -390,7 +517,28 @@ fi
 excerpt "$M" 'panic|plugin|tierbridge' 6
 chat "$MODEL_B"
 if [ "$CODE" = 200 ] && [ "$RMODEL" = "$ID_B" ]; then pass debug-non-alias "$MODEL_B -> 200 with the plugin erroring"; else fail debug-non-alias "http $CODE model=${RMODEL:-?} $(errsum)"; fi
+# shutdown flush: the change of the request above was written at once (first write after a start); the change
+# of the next one is < 5 s old, so it is still pending when SIGTERM arrives. The file must end up equal to the
+# live counters (live status.persistence.dirty should read true here).
+chat "$MODEL_A"
+sleep 1.2
+mgmt "/v0/management/tierbridge/counters" auth
+LIVE_TPD_A2="$(jq -r --arg m "$MODEL_A" '[.models[]? | select(.model == $m)][0].tpd.used // 0' "$MBODY" 2>/dev/null || echo 0)"
+mgmt "/v0/management/tierbridge/status" auth
+LIVE_PERSIST2="$(jq -c '.persistence | {dirty, saves}' "$MBODY" 2>/dev/null || echo '{}')"
 stop_cpa
+file_tpd2="$(jq -r --arg m "$MODEL_A" '[.models | to_entries[] | select(.key | endswith($m)) | .value.tpd] | first // 0' "$ST" 2>/dev/null || echo 0)"
+if [ "$file_tpd2" = "$LIVE_TPD_A2" ]; then
+  if jq -e '.dirty == true' <<<"$LIVE_PERSIST2" >/dev/null 2>&1; then
+    pass persist-shutdown "pending change flushed at stop: file tpd($MODEL_A)=$file_tpd2 equals live (live persistence $LIVE_PERSIST2)"
+  else
+    warn persist-shutdown "inconclusive: nothing was pending at SIGTERM (live persistence $LIVE_PERSIST2), file tpd=$file_tpd2"
+  fi
+elif [ "$REQUIRE_MGMT" = 1 ]; then
+  fail persist-shutdown "changes < 5 s old are lost when the host stops: file tpd($MODEL_A)=$file_tpd2, live=$LIVE_TPD_A2 (live persistence $LIVE_PERSIST2)"
+else
+  warn persist-shutdown "changes < 5 s old are lost when the host stops: file tpd($MODEL_A)=$file_tpd2, live=$LIVE_TPD_A2 (live persistence $LIVE_PERSIST2)"
+fi
 
 echo "SUMMARY requests=$REQS/$MAX_REQS fails=$FAILS"
 [ "$FAILS" -eq 0 ]
