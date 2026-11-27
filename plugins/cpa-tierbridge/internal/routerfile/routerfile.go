@@ -1,17 +1,16 @@
 // Package routerfile loads and validates the ranking file (tierbridge-router.json) the plugin routes by,
 // and reloads it when it changes on disk.
 //
-// # File format (schema "tierbridge-router/1", written by `tierbridge export cpa-router`)
+// # File format (schema "tierbridge-router/2", written by `tierbridge export cpa-router`)
 //
 //	{
-//	  "schema": "tierbridge-router/1",
-//	  "catalogSha256": "<hex>", "quotaSourceSha256": "<hex>|absent", "gateway": "omp-live:gw",
+//	  "schema": "tierbridge-router/2", "target": "host", "modelPrefix": "",
+//	  "catalogSha256": "<hex>", "quotaSourceSha256": "<hex>|null", "gateway": "omp-live:gw",
 //	  "aliases": [
 //	    {"alias": "tierbridge/auto", "profile": "free-first", "skipped": {...},
 //	     "candidates": [
-//	       {"model": "tb-llama-70b", "provider": "openai-compatible-gw", "id": "llama-70b",
-//	        "key": "omp-live:gw:gw/llama-70b", "contextWindow": 131072, "maxTokens": 8192,
-//	        "supportsTools": true, "input": ["text"],
+//	       {"model": "llama-70b", "id": "llama-70b", "key": "omp-live:gw:gw/llama-70b",
+//	        "contextWindow": 131072, "maxTokens": 8192, "supportsTools": true, "input": ["text"],
 //	        "cost": {"status": "free", "input": 0.0, "output": 0.0}, "confidence": "declared",
 //	        "quota": {"rpm": 30, "rpd": 14400, "tpm": 6000, "tpd": 500000,
 //	                  "monthlyTokenBudget": "~30M", "source": "...", "matchedBy": "...", "matches": 1},
@@ -20,19 +19,22 @@
 //	  ]
 //	}
 //
-// Unknown keys are ignored at every level. The profile is per alias and the provider per candidate.
-// The candidates of an alias are best first: the array order IS the rank, and the plugin picks the first
-// one that fits the request. An alias may have no candidates (valid: every route then falls through).
+// /2 is the host mode: "target" is always "host" (the CPA that runs the plugin resolves every
+// candidate.model itself, through its own model routing and credential rotation) and candidates carry NO
+// provider. "tierbridge-router/1" named a provider per candidate; it is rejected with a clear error.
+// Unknown keys are ignored at every level. The profile is per alias.
+// The candidates of an alias are best first: the array order IS the rank, and the executor tries the
+// first one that fits the request, then falls back down the list. An alias may have no candidates
+// (valid: every route then falls through).
 //
-// Candidate fields: "provider" (the CLIProxyAPI provider key the request is routed through) and
-// "model" (the model name sent to that provider; for the generated openai-compatibility block this is
-// the exported alias) are required. "contextWindow" in tokens (null/0 = unknown, never a reason to
-// skip); "supportsTools" (null = false: skipped for requests that declare tools); "input" lists the
-// accepted modalities (null/absent = text only: "image" is required for requests with images);
-// "quota.rpm"/"quota.rpd" are request quotas per minute and per UTC day and "quota.tpm"/"quota.tpd" the
-// token quotas (null/0 = unlimited; "monthlyTokenBudget" is free text and ignored); "cost.status" is
-// free, known or unknown, and a candidate with unknown (or null) prices is "unpriced": budget math
-// counts it as 0 and the management status flags it.
+// Candidate fields: "model" (the name the host accepts, "modelPrefix" + "id") is required and must
+// not be an alias name (the plugin never executes its own alias). "contextWindow" in tokens (null/0 =
+// unknown, never a reason to skip); "supportsTools" (null = false: skipped for requests that declare
+// tools); "input" lists the accepted modalities (null/absent = text only: "image" is required for
+// requests with images); "quota.rpm"/"quota.rpd" are request quotas per minute and per UTC day and
+// "quota.tpm"/"quota.tpd" the token quotas (null/0 = unlimited; "monthlyTokenBudget" is free text and
+// ignored); "cost.status" is free, known or unknown, and a candidate with unknown (or null) prices is
+// "unpriced": budget math counts it as 0 and the management status flags it.
 package routerfile
 
 import (
@@ -48,8 +50,14 @@ import (
 	"time"
 )
 
-// SchemaV1 is the only supported file schema.
+// Schema is the only supported file schema.
+const Schema = "tierbridge-router/2"
+
+// SchemaV1 is the retired schema (a provider per candidate); files carrying it are rejected.
 const SchemaV1 = "tierbridge-router/1"
+
+// TargetHost is the only supported "target": the host CPA resolves every candidate.model itself.
+const TargetHost = "host"
 
 // ErrNoPath is returned by Store.Current when no router file is configured.
 var ErrNoPath = errors.New("no router-file configured")
@@ -75,10 +83,9 @@ type Cost struct {
 
 // Candidate is one ranked provider/model pair.
 type Candidate struct {
-	// Model is the model name handed to the provider (ModelRouteResponse.TargetModel).
+	// Model is the model name the host CPA accepts (modelPrefix + id); the executor hands it to
+	// host.model.execute, which resolves the provider and credentials itself.
 	Model string `json:"model"`
-	// Provider is the CLIProxyAPI provider key (ModelRouteResponse.Target); lower case after Parse.
-	Provider string `json:"provider"`
 	// ID is the upstream model id and CatalogKey the catalog's stable key (informational, for status).
 	ID         string `json:"id,omitempty"`
 	CatalogKey string `json:"key,omitempty"`
@@ -111,7 +118,7 @@ func (c Candidate) HasInput(kind string) bool {
 
 // Key identifies the candidate in quota counters.
 func (c Candidate) Key() string {
-	return c.Provider + "/" + c.Model
+	return c.Model
 }
 
 // Unpriced reports that the candidate has no usable price: budget math counts it as 0 and the
@@ -139,6 +146,8 @@ type AliasEntry struct {
 // File is a validated router file.
 type File struct {
 	Schema            string       `json:"schema"`
+	Target            string       `json:"target"`
+	ModelPrefix       string       `json:"modelPrefix"`
 	CatalogSHA256     string       `json:"catalogSha256"`
 	QuotaSourceSHA256 string       `json:"quotaSourceSha256"`
 	Gateway           string       `json:"gateway"`
@@ -159,7 +168,7 @@ func (f *File) Alias(name string) *AliasEntry {
 	return nil
 }
 
-// Parse decodes and validates a router file, normalising providers (lower case) and modalities.
+// Parse decodes and validates a router file, normalising modalities.
 func Parse(data []byte) (*File, error) {
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
@@ -169,8 +178,14 @@ func Parse(data []byte) (*File, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("router file: %w", err)
 	}
-	if f.Schema != SchemaV1 {
-		return nil, fmt.Errorf("router file: unsupported schema %q (want %q)", f.Schema, SchemaV1)
+	if f.Schema == SchemaV1 {
+		return nil, fmt.Errorf("router file: schema %q is no longer supported: it names a provider per candidate and the plugin now runs the candidates through the host; re-export the file with a tierbridge that writes %q (tierbridge export cpa-router)", SchemaV1, Schema)
+	}
+	if f.Schema != Schema {
+		return nil, fmt.Errorf("router file: unsupported schema %q (want %q)", f.Schema, Schema)
+	}
+	if f.Target != TargetHost {
+		return nil, fmt.Errorf("router file: unsupported target %q (want %q)", f.Target, TargetHost)
 	}
 	if len(f.Aliases) == 0 {
 		return nil, errors.New("router file: no aliases")
@@ -198,10 +213,12 @@ func normaliseCandidates(a *AliasEntry) error {
 	seen := make(map[string]int, len(a.Candidates))
 	for i := range a.Candidates {
 		c := &a.Candidates[i]
-		c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
 		c.Model = strings.TrimSpace(c.Model)
-		if c.Provider == "" || c.Model == "" {
-			return fmt.Errorf("router file: alias %s candidate %d: provider and model are required", a.Alias, i+1)
+		if c.Model == "" {
+			return fmt.Errorf("router file: alias %s candidate %d: model is required", a.Alias, i+1)
+		}
+		if strings.EqualFold(c.Model, a.Alias) {
+			return fmt.Errorf("router file: alias %s candidate %d: model %q is the alias itself (the plugin never executes its own alias)", a.Alias, i+1, c.Model)
 		}
 		if c.ContextWindow < 0 || c.MaxTokens < 0 {
 			return fmt.Errorf("router file: alias %s candidate %d (%s): contextWindow and maxTokens must not be negative", a.Alias, i+1, c.Key())
@@ -253,6 +270,8 @@ type AliasStatus struct {
 // recorded, plus the hash and mtime of the file itself.
 type Revision struct {
 	Schema            string    `json:"schema,omitempty"`
+	Target            string    `json:"target,omitempty"`
+	ModelPrefix       string    `json:"modelPrefix,omitempty"`
 	CatalogSHA256     string    `json:"catalogSha256,omitempty"`
 	QuotaSourceSHA256 string    `json:"quotaSourceSha256,omitempty"`
 	Gateway           string    `json:"gateway,omitempty"`
@@ -367,6 +386,8 @@ func (s *Store) refreshLocked() {
 	s.file, s.loadErr, s.loadedAt = file, nil, s.now()
 	s.rev = Revision{
 		Schema:            file.Schema,
+		Target:            file.Target,
+		ModelPrefix:       file.ModelPrefix,
 		CatalogSHA256:     file.CatalogSHA256,
 		QuotaSourceSHA256: file.QuotaSourceSHA256,
 		Gateway:           file.Gateway,

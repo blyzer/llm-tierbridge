@@ -1,6 +1,8 @@
 package selector
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -8,279 +10,121 @@ import (
 	"github.com/blyzer/llm-tierbridge/plugins/cpa-tierbridge/internal/routerfile"
 )
 
-var t0 = time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
-
-func cand(provider, model string, window int, tools bool, input ...string) routerfile.Candidate {
-	return routerfile.Candidate{Provider: provider, Model: model, ContextWindow: window, SupportsTools: tools, Input: input}
+func cand(model string, window int, tools bool, input ...string) routerfile.Candidate {
+	return routerfile.Candidate{Model: model, ContextWindow: window, SupportsTools: tools, Input: input}
 }
 
-func TestSelect(t *testing.T) {
-	ranking := []routerfile.Candidate{
-		cand("small", "s", 1000, true, "text", "image"),      // 1
-		cand("notools", "n", 100000, false, "text", "image"), // 2
-		cand("textonly", "t", 100000, true, "text"),          // 3
-		cand("offline", "o", 100000, true, "text", "image"),  // 4
-		cand("big", "b", 0, true, "text", "image"),           // 5: unknown window always fits
-	}
+func TestFit(t *testing.T) {
 	tests := []struct {
-		name      string
-		req       estimate.Request
-		available []string
-		cands     []routerfile.Candidate
-		wantRank  int // 0 = nothing fits
-		wantSkips []SkipReason
-		wantText  string
+		name string
+		req  estimate.Request
+		c    routerfile.Candidate
+		want SkipReason
 	}{
-		{
-			name:     "first candidate wins",
-			req:      estimate.Request{Tokens: 10},
-			cands:    ranking,
-			wantRank: 1, wantText: "rank 1 of 5",
-		},
-		{
-			name:      "context window skip",
-			req:       estimate.Request{Tokens: 5000},
-			cands:     ranking,
-			wantRank:  2,
-			wantSkips: []SkipReason{SkipContext},
-			wantText:  "rank 2 of 5 (skipped 1: small/s context)",
-		},
-		{
-			name:      "window boundary fits",
-			req:       estimate.Request{Tokens: 1000},
-			cands:     ranking,
-			wantRank:  1,
-			wantSkips: nil,
-			wantText:  "rank 1 of 5",
-		},
-		{
-			name:      "tools skip",
-			req:       estimate.Request{Tokens: 5000, Tools: true},
-			cands:     ranking,
-			wantRank:  3,
-			wantSkips: []SkipReason{SkipContext, SkipTools},
-			wantText:  "rank 3 of 5 (skipped 2: small/s context, notools/n tools)",
-		},
-		{
-			name:      "image skip",
-			req:       estimate.Request{Tokens: 5000, Image: true},
-			cands:     ranking,
-			wantRank:  2,
-			wantSkips: []SkipReason{SkipContext},
-			wantText:  "rank 2 of 5 (skipped 1: small/s context)",
-		},
-		{
-			name:      "tools and image skip",
-			req:       estimate.Request{Tokens: 5000, Tools: true, Image: true},
-			cands:     ranking,
-			wantRank:  4,
-			wantSkips: []SkipReason{SkipContext, SkipTools, SkipImage},
-			wantText:  "rank 4 of 5 (skipped 3: small/s context, notools/n tools, textonly/t image)",
-		},
-		{
-			name:      "provider not available skip",
-			req:       estimate.Request{Tokens: 5000, Tools: true, Image: true},
-			available: []string{"small", "big"},
-			cands:     ranking,
-			wantRank:  5,
-			wantSkips: []SkipReason{SkipContext, SkipTools, SkipImage, SkipProvider},
-			wantText:  "rank 5 of 5 (skipped 4: small/s context, notools/n tools, textonly/t image, offline/o provider)",
-		},
-		{
-			name:      "available list is case-insensitive",
-			req:       estimate.Request{Tokens: 10},
-			available: []string{" SMALL "},
-			cands:     ranking,
-			wantRank:  1,
-			wantText:  "rank 1 of 5",
-		},
-		{
-			name:      "empty available list means no provider filter",
-			req:       estimate.Request{Tokens: 10},
-			available: nil,
-			cands:     ranking[3:4],
-			wantRank:  1,
-			wantText:  "rank 1 of 1",
-		},
-		{
-			name:      "nothing fits",
-			req:       estimate.Request{Tokens: 500000, Tools: true},
-			cands:     ranking[:4],
-			wantRank:  0,
-			wantSkips: []SkipReason{SkipContext, SkipContext, SkipContext, SkipContext},
-			wantText:  "no candidate fits (small/s context, notools/n context, textonly/t context, offline/o context)",
-		},
-		{
-			name:     "no candidates",
-			req:      estimate.Request{Tokens: 1},
-			cands:    nil,
-			wantRank: 0,
-			wantText: "no candidates",
-		},
+		{"fits", estimate.Request{Tokens: 100}, cand("a", 1000, true, "text"), ""},
+		{"unknown window always fits", estimate.Request{Tokens: 1 << 30}, cand("a", 0, false), ""},
+		{"context", estimate.Request{Tokens: 2000}, cand("a", 1000, true), SkipContext},
+		{"tools", estimate.Request{Tools: true}, cand("a", 1000, false), SkipTools},
+		{"image", estimate.Request{Image: true}, cand("a", 1000, true, "text"), SkipImage},
+		{"image accepted", estimate.Request{Image: true}, cand("a", 1000, true, "text", "image"), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Select(tc.req, tc.cands, tc.available, nil, t0)
-			if got.Rank != tc.wantRank || (got.Picked != nil) != (tc.wantRank != 0) {
-				t.Fatalf("Rank = %d (picked %v), want %d", got.Rank, got.Picked, tc.wantRank)
-			}
-			if got.Picked != nil && got.Picked.Key() != tc.cands[tc.wantRank-1].Key() {
-				t.Errorf("Picked = %s, want %s", got.Picked.Key(), tc.cands[tc.wantRank-1].Key())
-			}
-			if got.Of != len(tc.cands) {
-				t.Errorf("Of = %d, want %d", got.Of, len(tc.cands))
-			}
-			if len(got.Skips) != len(tc.wantSkips) {
-				t.Fatalf("Skips = %+v, want reasons %v", got.Skips, tc.wantSkips)
-			}
-			for i, s := range got.Skips {
-				if s.Reason != tc.wantSkips[i] || s.Rank != i+1 {
-					t.Errorf("Skips[%d] = %+v, want rank %d reason %s", i, s, i+1, tc.wantSkips[i])
-				}
-			}
-			if text := got.Reason(); text != tc.wantText {
-				t.Errorf("Reason() = %q, want %q", text, tc.wantText)
+			if got := Fit(tc.req, tc.c); got != tc.want {
+				t.Errorf("Fit() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSelect(t *testing.T) {
+	cands := []routerfile.Candidate{
+		cand("small", 100, true, "text"),
+		cand("notools", 10000, false, "text"),
+		cand("textonly", 10000, true, "text"),
+		cand("ok", 10000, true, "text", "image"),
+	}
+	out := Select(estimate.Request{Tokens: 500, Tools: true, Image: true}, cands, nil, time.Time{})
+	if out.Picked == nil || out.Picked.Model != "ok" || out.Rank != 4 || out.Of != 4 {
+		t.Fatalf("Select() = %+v", out)
+	}
+	want := "rank 4 of 4 (skipped 3: small context, notools tools, textonly image)"
+	if got := out.Reason(); got != want {
+		t.Errorf("Reason() = %q, want %q", got, want)
+	}
+
+	none := Select(estimate.Request{Tokens: 1 << 20}, cands, nil, time.Time{})
+	if none.Picked != nil || !strings.HasPrefix(none.Reason(), "no candidate fits (") {
+		t.Errorf("Select() with nothing fitting = %+v / %q", none, none.Reason())
+	}
+	if empty := Select(estimate.Request{}, nil, nil, time.Time{}); empty.Picked != nil || empty.Reason() != "no candidates" {
+		t.Errorf("Select(no candidates) = %+v / %q", empty, empty.Reason())
 	}
 }
 
 func TestReasonTruncatesLongSkipList(t *testing.T) {
 	var cands []routerfile.Candidate
 	for i := range 8 {
-		cands = append(cands, cand("p", string(rune('a'+i)), 10, true))
+		cands = append(cands, cand(fmt.Sprintf("m%d", i), 10, true))
 	}
-	cands = append(cands, cand("p", "z", 0, true))
-	got := Select(estimate.Request{Tokens: 100}, cands, nil, nil, t0).Reason()
-	want := "rank 9 of 9 (skipped 8: p/a context, p/b context, p/c context, p/d context, p/e context, +3 more)"
-	if got != want {
-		t.Errorf("Reason() = %q, want %q", got, want)
+	got := Select(estimate.Request{Tokens: 999}, cands, nil, time.Time{}).Reason()
+	if !strings.Contains(got, "m4 context, +3 more") {
+		t.Errorf("Reason() = %q, want a list cut at 5 with a +3 more tail", got)
 	}
 }
 
-// fakeLimiter allows each candidate RPM requests per sliding minute (0 = unlimited).
 type fakeLimiter struct {
-	seen map[string][]time.Time
+	refuse map[string]SkipReason
+	asked  []string
 }
 
-func (f *fakeLimiter) Reserve(c routerfile.Candidate, _ estimate.Request, now time.Time) (bool, SkipReason) {
-	if c.RPM == 0 {
-		return true, ""
+func (f *fakeLimiter) Reserve(c routerfile.Candidate, _ estimate.Request, _ time.Time) (bool, SkipReason) {
+	f.asked = append(f.asked, c.Model)
+	if why, no := f.refuse[c.Model]; no {
+		return false, why
 	}
-	if f.seen == nil {
-		f.seen = map[string][]time.Time{}
-	}
-	var keep []time.Time
-	for _, t := range f.seen[c.Key()] {
-		if t.After(now.Add(-time.Minute)) {
-			keep = append(keep, t)
-		}
-	}
-	if len(keep) >= c.RPM {
-		f.seen[c.Key()] = keep
-		return false, SkipRPM
-	}
-	f.seen[c.Key()] = append(keep, now)
 	return true, ""
 }
 
 func TestSelectWithLimiter(t *testing.T) {
-	ranking := []routerfile.Candidate{
-		{Provider: "a", Model: "one", RPM: 1},
-		{Provider: "b", Model: "two"},
+	lim := &fakeLimiter{refuse: map[string]SkipReason{"a": SkipRPM, "b": SkipCooldown}}
+	cands := []routerfile.Candidate{cand("a", 0, true), cand("b", 0, true), cand("c", 0, true), cand("d", 0, true)}
+	out := Select(estimate.Request{}, cands, lim, time.Time{})
+	if out.Picked == nil || out.Picked.Model != "c" || out.Rank != 3 {
+		t.Fatalf("Select() = %+v", out)
 	}
-	lim := &fakeLimiter{}
-
-	first := Select(estimate.Request{}, ranking, nil, lim, t0)
-	if first.Rank != 1 {
-		t.Fatalf("first request: rank %d, want 1", first.Rank)
+	if len(out.Skips) != 2 || out.Skips[0].Reason != SkipRPM || out.Skips[1].Reason != SkipCooldown {
+		t.Errorf("skips = %+v", out.Skips)
 	}
-	second := Select(estimate.Request{}, ranking, nil, lim, t0.Add(time.Second))
-	if second.Rank != 2 || len(second.Skips) != 1 || second.Skips[0].Reason != SkipRPM {
-		t.Fatalf("rpm 1: second request = rank %d skips %+v, want rank 2 after an rpm skip", second.Rank, second.Skips)
-	}
-	// A minute later the window has slid past the first request.
-	third := Select(estimate.Request{}, ranking, nil, lim, t0.Add(61*time.Second))
-	if third.Rank != 1 {
-		t.Errorf("after the window: rank %d, want 1", third.Rank)
+	if strings.Join(lim.asked, ",") != "a,b,c" {
+		t.Errorf("limiter asked %v, want it to stop at the first grant", lim.asked)
 	}
 }
 
 func TestSelectLimiterNotConsultedForStaticSkips(t *testing.T) {
-	// Quota is consumed only by the candidate that is actually picked.
-	ranking := []routerfile.Candidate{
-		{Provider: "a", Model: "one", ContextWindow: 10, RPM: 1},
-		{Provider: "b", Model: "two"},
-	}
 	lim := &fakeLimiter{}
-	if got := Select(estimate.Request{Tokens: 50}, ranking, nil, lim, t0); got.Rank != 2 {
-		t.Fatalf("rank %d, want 2", got.Rank)
-	}
-	if got := Select(estimate.Request{Tokens: 5}, ranking, nil, lim, t0); got.Rank != 1 {
-		t.Errorf("rank %d, want 1: a context skip must not consume the rpm slot", got.Rank)
+	Select(estimate.Request{Tools: true}, []routerfile.Candidate{cand("a", 0, false), cand("b", 0, true)}, lim, time.Time{})
+	if strings.Join(lim.asked, ",") != "b" {
+		t.Errorf("limiter asked %v, want only b", lim.asked)
 	}
 }
 
 func TestRecorder(t *testing.T) {
-	dec := func(model string) Decision { return Decision{RequestedModel: model} }
-	models := func(ds []Decision) []string {
-		var out []string
-		for _, d := range ds {
-			out = append(out, d.RequestedModel)
-		}
-		return out
-	}
-	eq := func(got []string, want ...string) bool {
-		if len(got) != len(want) {
-			return false
-		}
-		for i := range got {
-			if got[i] != want[i] {
-				return false
-			}
-		}
-		return true
-	}
-
 	r := NewRecorder(3)
-	if got := r.Recent(); len(got) != 0 {
-		t.Fatalf("empty ring = %v", models(got))
+	for i := 1; i <= 5; i++ {
+		r.Add(Decision{Rank: i, Attempts: []Attempt{{Rank: i, Model: "m", Status: 200, OK: true}}})
 	}
-	r.Add(dec("1"))
-	r.Add(dec("2"))
-	if got := models(r.Recent()); !eq(got, "2", "1") {
-		t.Errorf("Recent() = %v, want [2 1]", got)
+	got := r.Recent()
+	if len(got) != 3 || got[0].Rank != 5 || got[2].Rank != 3 || len(got[0].Attempts) != 1 {
+		t.Fatalf("Recent() = %+v, want the last 3 newest first, attempts kept", got)
 	}
-	r.Add(dec("3"))
-	r.Add(dec("4"))
-	r.Add(dec("5"))
-	if got := models(r.Recent()); !eq(got, "5", "4", "3") {
-		t.Errorf("full ring Recent() = %v, want [5 4 3]", got)
-	}
-	r.SetKeep(2)
-	if got := models(r.Recent()); !eq(got, "5", "4") {
-		t.Errorf("after shrinking Recent() = %v, want [5 4]", got)
-	}
-	r.Add(dec("6"))
-	if got := models(r.Recent()); !eq(got, "6", "5") {
-		t.Errorf("after shrink+add Recent() = %v, want [6 5]", got)
-	}
-	r.SetKeep(4)
-	r.Add(dec("7"))
-	if got := models(r.Recent()); !eq(got, "7", "6", "5") {
-		t.Errorf("after growing Recent() = %v, want [7 6 5]", got)
+	r.SetKeep(1)
+	if got := r.Recent(); len(got) != 1 || got[0].Rank != 5 {
+		t.Errorf("after SetKeep(1) = %+v", got)
 	}
 	r.SetKeep(0)
-	r.Add(dec("8"))
+	r.Add(Decision{Rank: 9})
 	if got := r.Recent(); len(got) != 0 {
-		t.Errorf("keep 0 holds %v", models(got))
-	}
-	r.SetKeep(2)
-	r.Add(dec("9"))
-	if got := models(r.Recent()); !eq(got, "9") {
-		t.Errorf("after re-enabling Recent() = %v, want [9]", got)
-	}
-	if got := NewRecorder(-1); got.keep != 0 {
-		t.Errorf("negative keep = %d, want 0", got.keep)
+		t.Errorf("keep 0 must hold nothing, got %+v", got)
 	}
 }

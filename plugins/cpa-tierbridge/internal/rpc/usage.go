@@ -118,11 +118,12 @@ func (h *Handler) handleUsage(request []byte) {
 	h.usageSeen.add(seen)
 }
 
-// matchCandidate finds the candidate of the configured alias a usage record belongs to. Stages, first
-// hit wins: Model == candidate.model, Alias == candidate.model, then Model == candidate.id (the host
-// reports the upstream id, without the "tb-" prefix of the exported model name) when the record's
-// provider is empty or agrees with the candidate's. Within a stage exact matches beat case-insensitive
-// ones and candidates whose provider agrees beat the others; an ambiguous or unknown model matches nothing.
+// matchCandidate finds the candidate of the configured alias a usage record belongs to. Candidates
+// carry no provider (router file /2: the host resolves the model), so the record's model is all there is
+// to go by. Stages, first hit wins: Model == candidate.model, Alias == candidate.model (both exact, then
+// case-insensitive), then Model == candidate.id (the host reports the upstream id, without the "tb-"
+// prefix of the exported model name). A stage with several hits is ambiguous and matches nothing. The
+// record of the executor's own call (model = the alias, provider "tierbridge") matches no candidate.
 func (h *Handler) matchCandidate(rec usageRecord) *routerfile.Candidate {
 	cfg, store := h.config()
 	file, _ := store.Current()
@@ -136,32 +137,20 @@ func (h *Handler) matchCandidate(rec usageRecord) *routerfile.Candidate {
 	byID := func(c *routerfile.Candidate, name string) bool { return c.ID == name }
 	byIDFold := func(c *routerfile.Candidate, name string) bool { return strings.EqualFold(c.ID, name) }
 	type stage struct {
-		name     string
-		eq       func(*routerfile.Candidate, string) bool
-		provider bool // only candidates whose provider agrees with the record's (or a record without one)
+		name string
+		eq   func(*routerfile.Candidate, string) bool
 	}
 	for _, st := range []stage{
-		{model, byModel, false}, {alias, byModel, false}, {model, byModelFold, false}, {alias, byModelFold, false},
-		{model, byID, true}, {model, byIDFold, true},
+		{model, byModel}, {alias, byModel}, {model, byModelFold}, {alias, byModelFold}, {model, byID}, {model, byIDFold},
 	} {
 		if st.name == "" {
 			continue
 		}
 		var hits []*routerfile.Candidate
 		for i := range entry.Candidates {
-			c := &entry.Candidates[i]
-			if st.eq(c, st.name) && (!st.provider || providerAgrees(rec.Provider, c.Provider)) {
+			if c := &entry.Candidates[i]; st.eq(c, st.name) {
 				hits = append(hits, c)
 			}
-		}
-		if len(hits) > 1 {
-			var agree []*routerfile.Candidate
-			for _, c := range hits {
-				if rec.Provider != "" && providerAgrees(rec.Provider, c.Provider) {
-					agree = append(agree, c)
-				}
-			}
-			hits = agree
 		}
 		switch len(hits) {
 		case 1:
@@ -173,21 +162,4 @@ func (h *Handler) matchCandidate(rec usageRecord) *routerfile.Candidate {
 		}
 	}
 	return nil
-}
-
-// providerAgrees reports whether the provider a usage record carries is the candidate's provider: equal
-// (any case), or equal once any "prefix:" / "prefix/" is stripped from either side. An empty record
-// provider carries no information and agrees with everything.
-func providerAgrees(recordProvider, candidateProvider string) bool {
-	rp, cp := strings.ToLower(strings.TrimSpace(recordProvider)), strings.ToLower(strings.TrimSpace(candidateProvider))
-	if rp == "" || rp == cp {
-		return true
-	}
-	strip := func(p string) string {
-		if i := strings.LastIndexAny(p, ":/"); i >= 0 {
-			return p[i+1:]
-		}
-		return p
-	}
-	return strip(rp) == strip(cp)
 }

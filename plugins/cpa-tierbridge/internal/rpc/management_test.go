@@ -94,10 +94,10 @@ func arr(t *testing.T, v any) []any {
 	return a
 }
 
-const richRanking = `{"provider":"gw","id":"a","model":"tb-a","contextWindow":1000,"maxTokens":100,"supportsTools":true,"input":["text"],
+const richRanking = `{"id":"a","model":"tb-a","contextWindow":1000,"maxTokens":100,"supportsTools":true,"input":["text"],
   "cost":{"status":"free","input":0,"output":0},"quota":{"rpm":5,"rpd":50,"tpm":1000,"tpd":9000}},
- {"provider":"gw","id":"b","model":"tb-b","cost":{"status":"known","input":1,"output":2}},
- {"provider":"gw","id":"c","model":"tb-c","cost":{"status":"unknown"}}`
+ {"id":"b","model":"tb-b","cost":{"status":"known","input":1,"output":2}},
+ {"id":"c","model":"tb-c","cost":{"status":"unknown"}}`
 
 func richPlugin(t *testing.T) *Handler {
 	t.Helper()
@@ -174,7 +174,7 @@ func TestManagementStatusShape(t *testing.T) {
 	if len(usage) != 2 {
 		t.Fatalf("lastUsageModels = %v", usage)
 	}
-	wantKeys(t, "lastUsageModels[0]", obj(t, usage[0]), "time", "model", "alias", "provider", "failed", "status", "tokens", "matched")
+	wantKeys(t, "lastUsageModels[0]", obj(t, usage[0]), "time", "model", "provider", "alias", "failed", "status", "tokens", "matched")
 	wantKeys(t, "persistence", obj(t, st["persistence"]), "enabled", "path", "loaded", "loadedAt", "dirty", "saves", "lastSaveAt")
 	wantKeys(t, "router.aliases[0]", obj(t, arr(t, router["aliases"])[0]), "alias", "profile", "candidates", "unpriced")
 }
@@ -201,7 +201,7 @@ func TestManagementCandidatesShape(t *testing.T) {
 		t.Fatalf("candidates = %v", cands)
 	}
 	first := obj(t, cands[0])
-	wantKeys(t, "candidate", first, "rank", "provider", "model", "id", "contextWindow", "maxTokens", "supportsTools", "input", "cost", "unpriced", "limits")
+	wantKeys(t, "candidate", first, "rank", "model", "id", "contextWindow", "maxTokens", "supportsTools", "input", "cost", "unpriced", "limits")
 	wantKeys(t, "cost", obj(t, first["cost"]), "status", "input", "output")
 	wantKeys(t, "limits", obj(t, first["limits"]), "rpm", "rpd", "tpm", "tpd")
 	lim := obj(t, first["limits"])
@@ -222,7 +222,7 @@ func TestManagementCountersShape(t *testing.T) {
 	wantKeys(t, "counters", doc, "day", "now", "models")
 	models := arr(t, doc["models"])
 	a := obj(t, models[0])
-	wantKeys(t, "model", a, "provider", "model", "rpm", "rpd", "tpm", "tpd", "cooldownRemainingSeconds")
+	wantKeys(t, "model", a, "model", "rpm", "rpd", "tpm", "tpd", "cooldownRemainingSeconds")
 	wantKeys(t, "rpm", obj(t, a["rpm"]), "used", "limit")
 	if obj(t, a["rpm"])["used"] != float64(1) || obj(t, a["rpm"])["limit"] != float64(5) ||
 		obj(t, a["tpm"])["used"] != float64(30) || obj(t, a["tpd"])["limit"] != float64(9000) {
@@ -258,8 +258,8 @@ func TestManagementDecisionsShapeAndLimit(t *testing.T) {
 		t.Fatalf("decisions = %d", len(all))
 	}
 	d := obj(t, all[0])
-	wantKeys(t, "decision", d, "time", "requestedModel", "chosen", "reason", "skipped", "estimatedTokens")
-	wantKeys(t, "chosen", obj(t, d["chosen"]), "provider", "model", "rank")
+	wantKeys(t, "decision", d, "time", "requestedModel", "chosen", "reason", "skipped", "estimatedTokens", "attempts", "status")
+	wantKeys(t, "chosen", obj(t, d["chosen"]), "model", "rank", "status")
 	if d["requestedModel"] != aliasModel || d["estimatedTokens"] != float64(10) {
 		t.Errorf("decision = %v", d)
 	}
@@ -268,7 +268,7 @@ func TestManagementDecisionsShapeAndLimit(t *testing.T) {
 		t.Errorf("newest decision = %v", d)
 	}
 	skipped := arr(t, d["skipped"])
-	wantKeys(t, "skipped[0]", obj(t, skipped[0]), "rank", "provider", "model", "reason")
+	wantKeys(t, "skipped[0]", obj(t, skipped[0]), "rank", "model", "reason")
 	two := getJSON(t, h, "/tierbridge/decisions", map[string][]string{"limit": {"2"}})
 	if n := len(arr(t, two["decisions"])); n != 2 || two["limit"] != float64(2) {
 		t.Errorf("limit=2 returned %d decisions: %v", n, two)
@@ -282,7 +282,7 @@ func TestManagementDecisionsShapeAndLimit(t *testing.T) {
 }
 
 func TestManagementDecisionWithoutAPick(t *testing.T) {
-	h, _ := newPlugin(t, wrap(`{"provider":"gw","model":"tiny","contextWindow":5}`), "")
+	h, _ := newPlugin(t, wrap(`{"model":"tiny","contextWindow":5}`), "")
 	route(t, h, aliasModel, chatBody(400, ""), nil)
 	d := obj(t, arr(t, getJSON(t, h, "/tierbridge/decisions", nil)["decisions"])[0])
 	if d["chosen"] != nil || len(arr(t, d["skipped"])) != 1 {

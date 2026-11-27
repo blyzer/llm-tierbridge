@@ -1,7 +1,8 @@
 // Command cpa-tierbridge is a CLIProxyAPI native plugin (c-shared library) that adds the
-// "tierbridge/auto" model alias: a ModelRouter that ranks provider/model candidates from the router
-// file exported by `tierbridge export cpa-router`, fits them to the request, and hands the pick back
-// to the host's built-in auth/executor path.
+// "tierbridge/auto" model alias: a ModelRouter that routes the alias to the plugin's own executor, which
+// ranks the candidate models of the router file exported by `tierbridge export cpa-router`, runs the
+// first that fits the request through the host (host.model.execute) and falls back down the list
+// within one request.
 //
 // This file is only the cgo shim, modelled on CLIProxyAPI's examples/plugin/management-api/go. It
 // implements the four exports of the native plugin ABI and moves bytes between C and
@@ -28,6 +29,31 @@ typedef struct {
 	cliproxy_host_call_fn call;
 	cliproxy_host_free_fn free_buffer;
 } cliproxy_host_api;
+
+// The host API is copied at every init (the host probes a library with an init+shutdown before using
+// it) and used for the host.model.execute callbacks of the executor.
+static cliproxy_host_api stored_host;
+static int have_host;
+
+static void store_host_api(const cliproxy_host_api* host) {
+	if (host != NULL) {
+		stored_host = *host;
+		have_host = 1;
+	}
+}
+
+static int call_host_api(const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+	if (!have_host || stored_host.call == NULL) {
+		return 1;
+	}
+	return stored_host.call(stored_host.host_ctx, method, request, request_len, response);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+	if (have_host && stored_host.free_buffer != NULL && ptr != NULL) {
+		stored_host.free_buffer(ptr, len);
+	}
+}
 
 typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
 typedef void (*cliproxy_plugin_free_fn)(void*, size_t);
@@ -70,9 +96,12 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	if plugin == nil {
 		return 1
 	}
-	// The plugin makes no host callbacks, so the host API is only checked for ABI compatibility.
 	if host != nil && uint32(host.abi_version) != wire.ABIVersion {
 		return 1
+	}
+	if host != nil {
+		C.store_host_api(host)
+		handler.SetHost(cgoHost{})
 	}
 	plugin.abi_version = C.uint32_t(wire.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
@@ -90,7 +119,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	// A Go panic crossing the cgo boundary would take the whole host down: recover everything.
 	defer func() {
 		if r := recover(); r != nil {
-			writeResponse(response, wire.ErrorEnvelope(wire.ErrorCodeInternal, fmt.Sprintf("plugin panic: %v", r)))
+			writeResponse(response, wire.ErrorEnvelopeStatus(wire.ErrorCodeInternal, fmt.Sprintf("plugin panic: %v", r), 500, 0))
 			rc = 1
 		}
 	}()
@@ -119,6 +148,37 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 func cliproxyPluginShutdown() {
 	defer func() { _ = recover() }() // never let a panic cross the cgo boundary
 	handler.Flush()
+}
+
+// cgoHost is the rpc.HostCaller over the host API: the only cgo the callbacks need, so everything
+// around it (envelopes, deadlines, panics) is plain Go tested without cgo.
+type cgoHost struct{}
+
+func (cgoHost) Call(method string, request []byte) ([]byte, error) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	var response C.cliproxy_buffer
+	var requestPtr *C.uint8_t
+	if len(request) > 0 {
+		p := C.CBytes(request)
+		if p == nil {
+			return nil, fmt.Errorf("allocate host callback %s", method)
+		}
+		defer C.free(p)
+		requestPtr = (*C.uint8_t)(p)
+	}
+	code := C.call_host_api(cMethod, requestPtr, C.size_t(len(request)), &response)
+	var raw []byte
+	if response.ptr != nil && response.len > 0 {
+		raw = C.GoBytes(response.ptr, C.int(response.len))
+	}
+	if response.ptr != nil {
+		C.free_host_buffer(response.ptr, response.len)
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("host callback %s returned no response (code %d)", method, int(code))
+	}
+	return raw, nil
 }
 
 // writeResponse hands raw to the host in a C-allocated buffer that cliproxyPluginFree releases.

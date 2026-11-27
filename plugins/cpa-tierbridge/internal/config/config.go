@@ -16,6 +16,11 @@ const (
 	DefaultAlias           = "tierbridge/auto"
 	DefaultCooldownSeconds = 60
 	DefaultDecisionsKeep   = 50
+	DefaultMaxAttempts     = 3
+	DefaultDeadlineSeconds = 120
+
+	// MaxMaxAttempts bounds max-attempts so a typo cannot make one request walk a whole catalog.
+	MaxMaxAttempts = 50
 
 	// MaxDecisionsKeep bounds the decisions ring so a typo cannot grow the plugin without limit.
 	MaxDecisionsKeep = 10000
@@ -36,6 +41,10 @@ type Config struct {
 	StatePath string `yaml:"state-path"`
 	// DecisionsKeep is the size of the recent-decisions ring; 0 keeps none.
 	DecisionsKeep int `yaml:"decisions-keep"`
+	// MaxAttempts is how many candidates one executed request may try (host.model.execute calls).
+	MaxAttempts int `yaml:"max-attempts"`
+	// DeadlineSeconds bounds one executed request, all attempts included; 0 means no deadline.
+	DeadlineSeconds int `yaml:"deadline-seconds"`
 	// DebugForceError is a TEST SWITCH: it makes RouteModel panic internally so an acceptance run can
 	// prove the host falls through when the plugin misbehaves.
 	DebugForceError bool `yaml:"debug-force-error"`
@@ -47,6 +56,8 @@ func Default() Config {
 		Alias:           DefaultAlias,
 		CooldownSeconds: DefaultCooldownSeconds,
 		DecisionsKeep:   DefaultDecisionsKeep,
+		MaxAttempts:     DefaultMaxAttempts,
+		DeadlineSeconds: DefaultDeadlineSeconds,
 	}
 }
 
@@ -75,6 +86,12 @@ func Parse(raw []byte) (Config, error) {
 	}
 	if cfg.DecisionsKeep < 0 || cfg.DecisionsKeep > MaxDecisionsKeep {
 		return Config{}, fmt.Errorf("decisions-keep must be between 0 and %d, got %d", MaxDecisionsKeep, cfg.DecisionsKeep)
+	}
+	if cfg.MaxAttempts < 1 || cfg.MaxAttempts > MaxMaxAttempts {
+		return Config{}, fmt.Errorf("max-attempts must be between 1 and %d, got %d", MaxMaxAttempts, cfg.MaxAttempts)
+	}
+	if cfg.DeadlineSeconds < 0 {
+		return Config{}, fmt.Errorf("deadline-seconds must be >= 0, got %d", cfg.DeadlineSeconds)
 	}
 	return cfg, nil
 }

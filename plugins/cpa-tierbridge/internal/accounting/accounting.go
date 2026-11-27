@@ -248,6 +248,29 @@ func (a *Accountant) Charge(c routerfile.Candidate, u Usage, now time.Time) {
 	a.notify()
 }
 
+// Cool puts c on cooldown after an upstream failure seen while serving a request, the in-request twin
+// of the cooldown Charge applies for a failed usage record: only 429 and >= 500 cool, for at least the
+// configured length (more when the upstream's Retry-After asks for it). It reports whether the
+// candidate now cools down.
+func (a *Accountant) Cool(c routerfile.Candidate, status int, headers map[string][]string, now time.Time) bool {
+	if status != http.StatusTooManyRequests && status < 500 {
+		return false
+	}
+	a.mu.Lock()
+	m := a.stateLocked(c.Model)
+	d := max(a.cooldown, RetryAfter(headers, now))
+	cooled := false
+	if until := now.Add(d); d > 0 && until.After(m.cooldownUntil) {
+		m.cooldownUntil = until
+		cooled = true
+	}
+	a.mu.Unlock()
+	if cooled {
+		a.notify()
+	}
+	return cooled
+}
+
 // RetryAfter reads the Retry-After header (seconds or an HTTP date, any header-name case), bounded by
 // MaxRetryAfter. It returns 0 when the header is absent or unusable.
 func RetryAfter(headers map[string][]string, now time.Time) time.Duration {
@@ -285,12 +308,11 @@ type Counter struct {
 
 // ModelCounters is the counter view of one candidate.
 type ModelCounters struct {
-	Provider string  `json:"provider"`
-	Model    string  `json:"model"`
-	RPM      Counter `json:"rpm"`
-	RPD      Counter `json:"rpd"`
-	TPM      Counter `json:"tpm"`
-	TPD      Counter `json:"tpd"`
+	Model string  `json:"model"`
+	RPM   Counter `json:"rpm"`
+	RPD   Counter `json:"rpd"`
+	TPM   Counter `json:"tpm"`
+	TPD   Counter `json:"tpd"`
 	// CooldownRemainingSeconds is 0 when the model is not cooling down.
 	CooldownRemainingSeconds int64 `json:"cooldownRemainingSeconds"`
 }
@@ -310,7 +332,7 @@ func (a *Accountant) Counters(cands []routerfile.Candidate, now time.Time) []Mod
 	a.rollLocked(now)
 	out := make([]ModelCounters, 0, len(cands))
 	for _, c := range cands {
-		mc := ModelCounters{Provider: c.Provider, Model: c.Model,
+		mc := ModelCounters{Model: c.Model,
 			RPM: Counter{Limit: limitOf(c.RPM)}, RPD: Counter{Limit: limitOf(c.RPD)},
 			TPM: Counter{Limit: limitOf(c.TPM)}, TPD: Counter{Limit: limitOf(c.TPD)}}
 		if m := a.models[c.Model]; m != nil {

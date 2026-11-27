@@ -48,15 +48,15 @@ func sendUsage(t *testing.T, h *Handler, raw []byte) {
 	}
 }
 
-const twoModels = `{"provider":"gw","model":"tb-a","quota":{"tpm":1000,"tpd":1500},"cost":{"status":"free","input":0,"output":0}},
- {"provider":"gw","model":"tb-b","cost":{"status":"known","input":1,"output":2}}`
+const twoModels = `{"model":"tb-a","quota":{"tpm":1000,"tpd":1500},"cost":{"status":"free","input":0,"output":0}},
+ {"model":"tb-b","cost":{"status":"known","input":1,"output":2}}`
 
 func TestUsageChargesTokensAgainstTheModelsQuota(t *testing.T) {
 	h, _ := newPlugin(t, wrap(twoModels), "")
 	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "tb-a", "Detail": detail(700, 200, 900)}))
 	// 900 of 1000 tokens per minute used: a 400-token prompt (1600 bytes) no longer fits tb-a.
 	got := route(t, h, aliasModel, chatBody(1600, ""), nil)
-	if got.TargetModel != "tb-b" || got.Reason != "rank 2 of 2 (skipped 1: gw/tb-a tpm)" {
+	if got.TargetModel != "tb-b" || got.Reason != "rank 2 of 2 (skipped 1: tb-a tpm)" {
 		t.Errorf("route = %+v", got)
 	}
 	if small := route(t, h, aliasModel, chatBody(40, ""), nil); small.TargetModel != "tb-a" {
@@ -108,7 +108,7 @@ func TestUsageCooldownFrom429AndRetryAfter(t *testing.T) {
 	h, _ := newPlugin(t, wrap(twoModels), "cooldown-seconds: 30\n")
 	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "tb-a", "Failed": true, "Failure": map[string]any{"StatusCode": 429, "Body": "slow down"}}))
 	got := route(t, h, aliasModel, chatBody(40, ""), nil)
-	if got.TargetModel != "tb-b" || got.Reason != "rank 2 of 2 (skipped 1: gw/tb-a cooldown)" {
+	if got.TargetModel != "tb-b" || got.Reason != "rank 2 of 2 (skipped 1: tb-a cooldown)" {
 		t.Fatalf("route = %+v, want tb-a cooling down", got)
 	}
 	if c := h.countersView().Models[0]; c.CooldownRemainingSeconds != 30 {
@@ -231,9 +231,9 @@ func TestCorruptedStateFileIsReportedInStatus(t *testing.T) {
 	}
 }
 
-const withIDs = `{"provider":"gw","id":"alpha","model":"tb-alpha","cost":{"status":"free","input":0,"output":0}},
- {"provider":"other","id":"alpha","model":"tb-alpha2","cost":{"status":"free","input":0,"output":0}},
- {"provider":"gw","id":"beta","model":"tb-beta","cost":{"status":"free","input":0,"output":0}}`
+const withIDs = `{"id":"alpha","model":"tb-alpha","cost":{"status":"free","input":0,"output":0}},
+ {"id":"alpha","model":"tb-alpha2","cost":{"status":"free","input":0,"output":0}},
+ {"id":"beta","model":"tb-beta","cost":{"status":"free","input":0,"output":0}}`
 
 // The host reports the upstream id ("beta"), not the exported model name ("tb-beta"), in UsageRecord.Model.
 func TestUsageMatchesTheUpstreamIDWithoutThePrefix(t *testing.T) {
@@ -242,20 +242,16 @@ func TestUsageMatchesTheUpstreamIDWithoutThePrefix(t *testing.T) {
 	if c := h.countersView().Models[2]; c.TPD.Used != 77 {
 		t.Errorf("tb-beta tpd = %d, want 77 charged through id %q", c.TPD.Used, "beta")
 	}
-	// A provider that does not agree, or the same id under two providers without one, is ambiguous/unknown.
+	// Candidates carry no provider (router file /2), so a shared id is ambiguous and charges nothing,
+	// whatever provider the record names; the unique id is charged even under another provider.
+	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "alpha", "Provider": "gw", "Detail": detail(0, 0, 5)}))
 	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "beta", "Provider": "elsewhere", "Detail": detail(0, 0, 5)}))
-	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "alpha", "Provider": "", "Detail": detail(0, 0, 5)}))
-	if c := h.countersView().Models; c[0].TPD.Used != 0 || c[1].TPD.Used != 0 || c[2].TPD.Used != 77 {
-		t.Errorf("ambiguous or foreign usage was charged: %+v", c)
+	if c := h.countersView().Models; c[0].TPD.Used != 0 || c[1].TPD.Used != 0 || c[2].TPD.Used != 82 {
+		t.Errorf("ambiguous id was charged or the unique id was not: %+v", c)
 	}
-	// With the provider the shared id is resolved; a prefixed provider name is accepted too.
-	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "alpha", "Provider": "openai-compatibility:other", "Detail": detail(0, 0, 9)}))
-	if c := h.countersView().Models; c[0].TPD.Used != 0 || c[1].TPD.Used != 9 {
-		t.Errorf("alpha under provider other: %+v", c)
-	}
-	// A failed record under the bare id cools the routed candidate for the next request.
-	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "alpha", "Provider": "gw", "Failed": true, "Failure": map[string]any{"StatusCode": 429}}))
-	if got := route(t, h, aliasModel, chatBody(40, ""), nil); got.TargetModel != "tb-alpha2" || !strings.Contains(got.Reason, "gw/tb-alpha cooldown") {
+	// The exported model name is never ambiguous: a failed record cools the routed candidate.
+	sendUsage(t, h, hostUsageRecord(t, map[string]any{"Model": "tb-alpha", "Provider": "gw", "Failed": true, "Failure": map[string]any{"StatusCode": 429}}))
+	if got := route(t, h, aliasModel, chatBody(40, ""), nil); got.TargetModel != "tb-alpha2" || !strings.Contains(got.Reason, "tb-alpha cooldown") {
 		t.Errorf("route = %+v, want tb-alpha cooling down", got)
 	}
 	seen := h.Status().LastUsageModels

@@ -18,7 +18,7 @@ const (
 	SkipContext  SkipReason = "context"  // the estimated prompt exceeds the context window
 	SkipTools    SkipReason = "tools"    // the request declares tools and the model does not support them
 	SkipImage    SkipReason = "image"    // the request carries an image and the model does not take image input
-	SkipProvider SkipReason = "provider" // the provider has no credentials registered in the host
+	SkipAlias    SkipReason = "alias"    // the candidate is an alias name: the plugin never executes an alias
 	SkipRPM      SkipReason = "rpm"      // the per-minute request quota is used up
 	SkipRPD      SkipReason = "rpd"      // the per-day request quota is used up
 	SkipTPM      SkipReason = "tpm"      // the request does not fit the per-minute token quota
@@ -39,10 +39,9 @@ type Limiter interface {
 
 // Skip records why one candidate was passed over.
 type Skip struct {
-	Rank     int        `json:"rank"`
-	Provider string     `json:"provider"`
-	Model    string     `json:"model"`
-	Reason   SkipReason `json:"reason"`
+	Rank   int        `json:"rank"`
+	Model  string     `json:"model"`
+	Reason SkipReason `json:"reason"`
 }
 
 // Outcome is the result of one selection.
@@ -55,45 +54,39 @@ type Outcome struct {
 	Skips []Skip
 }
 
-// Select returns the first candidate of cands that fits req.
-//
-// A candidate fits when: the estimated prompt does not exceed its context window (unknown window =
-// fits); it supports tools if the request declares any; it accepts images if the request has any; its
-// provider is among available (an empty available list means the host reported nothing to check
-// against, so every provider passes); and lim allows one more request. lim may be nil (no quotas).
-func Select(req estimate.Request, cands []routerfile.Candidate, available []string, lim Limiter, now time.Time) Outcome {
+// Fit reports why c cannot take req on static grounds, or "" when it fits: the estimated prompt must
+// not exceed its context window (unknown window = fits), it must support tools if the request declares
+// any, and accept images if the request has any. Quotas, budget and cooldown are the Limiter's business.
+func Fit(req estimate.Request, c routerfile.Candidate) SkipReason {
+	switch {
+	case c.ContextWindow > 0 && req.Tokens > c.ContextWindow:
+		return SkipContext
+	case req.Tools && !c.SupportsTools:
+		return SkipTools
+	case req.Image && !c.HasInput("image"):
+		return SkipImage
+	}
+	return ""
+}
+
+// Select returns the first candidate of cands that fits req (see Fit) and that lim allows one more
+// request on. lim may be nil (no quotas: a preview that consumes nothing).
+func Select(req estimate.Request, cands []routerfile.Candidate, lim Limiter, now time.Time) Outcome {
 	out := Outcome{Of: len(cands)}
-	var have map[string]bool
-	if len(available) > 0 {
-		have = make(map[string]bool, len(available))
-		for _, p := range available {
-			have[strings.ToLower(strings.TrimSpace(p))] = true
-		}
-	}
-	skip := func(i int, c routerfile.Candidate, why SkipReason) {
-		out.Skips = append(out.Skips, Skip{Rank: i + 1, Provider: c.Provider, Model: c.Model, Reason: why})
-	}
 	for i := range cands {
 		c := cands[i]
-		switch {
-		case c.ContextWindow > 0 && req.Tokens > c.ContextWindow:
-			skip(i, c, SkipContext)
-		case req.Tools && !c.SupportsTools:
-			skip(i, c, SkipTools)
-		case req.Image && !c.HasInput("image"):
-			skip(i, c, SkipImage)
-		case have != nil && !have[c.Provider]:
-			skip(i, c, SkipProvider)
-		default:
-			if lim != nil {
-				if ok, why := lim.Reserve(c, req, now); !ok {
-					skip(i, c, why)
-					continue
-				}
-			}
-			out.Picked, out.Rank = &cands[i], i+1
-			return out
+		if why := Fit(req, c); why != "" {
+			out.Skips = append(out.Skips, Skip{Rank: i + 1, Model: c.Model, Reason: why})
+			continue
 		}
+		if lim != nil {
+			if ok, why := lim.Reserve(c, req, now); !ok {
+				out.Skips = append(out.Skips, Skip{Rank: i + 1, Model: c.Model, Reason: why})
+				continue
+			}
+		}
+		out.Picked, out.Rank = &cands[i], i+1
+		return out
 	}
 	return out
 }
@@ -117,7 +110,7 @@ func (o Outcome) Reason() string {
 	return b.String()
 }
 
-// skipList renders the first few skips as "provider/model reason, ..." with a "+N more" tail.
+// skipList renders the first few skips as "model reason, ..." with a "+N more" tail.
 func (o Outcome) skipList() string {
 	const maxListed = 5
 	var b strings.Builder
@@ -129,7 +122,7 @@ func (o Outcome) skipList() string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s/%s %s", s.Provider, s.Model, s.Reason)
+		fmt.Fprintf(&b, "%s %s", s.Model, s.Reason)
 	}
 	return b.String()
 }

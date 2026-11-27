@@ -13,16 +13,16 @@ import (
 var t0 = time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 
 func free(model string) routerfile.Candidate {
-	return routerfile.Candidate{Provider: "p", Model: model, Cost: routerfile.Cost{Status: "free", Input: new(0.0), Output: new(0.0)}}
+	return routerfile.Candidate{Model: model, Cost: routerfile.Cost{Status: "free", Input: new(0.0), Output: new(0.0)}}
 }
 
 // paid is priced at $1 per million input tokens and $2 per million output tokens.
 func paid(model string) routerfile.Candidate {
-	return routerfile.Candidate{Provider: "p", Model: model, Cost: routerfile.Cost{Status: "known", Input: new(1.0), Output: new(2.0)}}
+	return routerfile.Candidate{Model: model, Cost: routerfile.Cost{Status: "known", Input: new(1.0), Output: new(2.0)}}
 }
 
 func unknown(model string) routerfile.Candidate {
-	return routerfile.Candidate{Provider: "p", Model: model, Cost: routerfile.Cost{Status: "unknown"}}
+	return routerfile.Candidate{Model: model, Cost: routerfile.Cost{Status: "unknown"}}
 }
 
 func req(tokens int) estimate.Request { return estimate.Request{Tokens: tokens} }

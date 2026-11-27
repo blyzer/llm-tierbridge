@@ -40,15 +40,26 @@ const (
 
 	MethodModelRoute = "model.route"
 
+	MethodExecutorIdentifier  = "executor.identifier"
+	MethodExecutorExecute     = "executor.execute"
+	MethodExecutorCountTokens = "executor.count_tokens"
+	MethodExecutorHTTP        = "executor.http_request"
+	// MethodExecutorStream is declared by the contract but not served yet: the first increment of the
+	// self executor is non-streaming only, so streaming requests are answered with a clear error.
+	MethodExecutorStream = "executor.execute_stream"
+
 	MethodUsageHandle = "usage.handle"
 
 	MethodManagementRegister = "management.register"
 	MethodManagementHandle   = "management.handle"
 )
 
-// ModelRouteTargetProvider is pluginapi.ModelRouteTargetProvider: route through the host's built-in
-// auth/executor path.
-const ModelRouteTargetProvider = "provider"
+// Host callback methods the plugin issues (pluginabi.MethodHost*).
+const MethodHostModelExecute = "host.model.execute"
+
+// ModelRouteTargetSelf is pluginapi.ModelRouteTargetSelf: the host runs the request through this
+// plugin's own executor (executor.execute), which then calls back into the host per candidate.
+const ModelRouteTargetSelf = "self"
 
 // Envelope is pluginabi.Envelope, the response wrapper of every RPC call.
 type Envelope struct {
@@ -62,6 +73,9 @@ type Error struct {
 	Code       string `json:"code"`
 	Message    string `json:"message"`
 	HTTPStatus int    `json:"http_status,omitempty"`
+	Retryable  bool   `json:"retryable,omitempty"`
+	// RetryAfterSeconds is an optional hint; hosts that do not know it ignore it.
+	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 }
 
 // Error codes used in failed envelopes.
@@ -69,6 +83,20 @@ const (
 	ErrorCodeUnknownMethod = "unknown_method"
 	ErrorCodeBadRequest    = "bad_request"
 	ErrorCodeInternal      = "internal_error"
+
+	// ErrorCodeNotImplemented is pluginabi.ErrorCodeNotImplemented: an optional capability is
+	// unsupported, so the host keeps the model available instead of cooling it.
+	ErrorCodeNotImplemented = "not_implemented"
+	// ErrorCodeRequestScoped is pluginabi.ErrorCodeRequestScoped: the request itself is at fault, so
+	// the host skips cooldown and stops rotating credentials.
+	ErrorCodeRequestScoped = "request_scoped"
+	// ErrorCodeTransientRateLimit is pluginabi.ErrorCodeTransientRateLimit (a 429 that cools only the
+	// reporting model).
+	ErrorCodeTransientRateLimit = "transient_rate_limit"
+	// Codes of this plugin's own failures (no host meaning: the host maps them by http_status).
+	ErrorCodeUpstream = "upstream_error"
+	ErrorCodeNoRoute  = "no_candidate"
+	ErrorCodeDeadline = "deadline_exceeded"
 )
 
 // LifecycleRequest is the request of plugin.register and plugin.reconfigure (rpcLifecycleRequest).
@@ -116,29 +144,89 @@ type ConfigField struct {
 
 // Capabilities is the subset of rpcCapabilities this plugin declares.
 type Capabilities struct {
-	ModelRouter   bool `json:"model_router"`
-	UsagePlugin   bool `json:"usage_plugin"`
-	ManagementAPI bool `json:"management_api"`
+	ModelRouter bool `json:"model_router"`
+	// Executor makes the host call executor.* on this plugin. The model scope must be "static" (the
+	// plugin serves a model alias, not an OAuth credential) and at least one input and one output
+	// format must be declared, or the host treats the executor as unavailable.
+	Executor              bool     `json:"executor"`
+	ExecutorModelScope    string   `json:"executor_model_scope"`
+	ExecutorInputFormats  []string `json:"executor_input_formats"`
+	ExecutorOutputFormats []string `json:"executor_output_formats"`
+	UsagePlugin           bool     `json:"usage_plugin"`
+	ManagementAPI         bool     `json:"management_api"`
 }
+
+// ExecutorModelScopeStatic is pluginapi.ExecutorModelScopeStatic.
+const ExecutorModelScopeStatic = "static"
 
 // ModelRouteRequest is the part of pluginapi.ModelRouteRequest (plus the host's host_callback_id)
 // the plugin reads; the headers, query, metadata and plugin descriptor are ignored.
 type ModelRouteRequest struct {
-	PluginID           string
-	SourceFormat       string
-	RequestedModel     string
-	Stream             bool
-	Body               []byte
-	AvailableProviders []string
+	PluginID       string
+	SourceFormat   string
+	RequestedModel string
+	Stream         bool
+	Body           []byte
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
-// ModelRouteResponse is pluginapi.ModelRouteResponse (no json tags: capitalised keys).
+// ModelRouteResponse is pluginapi.ModelRouteResponse (no json tags: capitalised keys). With
+// TargetKind "self" the host fills Target in itself and ignores TargetModel.
 type ModelRouteResponse struct {
 	Handled     bool
 	TargetKind  string
 	Target      string
 	TargetModel string
 	Reason      string
+}
+
+// IdentifierResponse is rpcIdentifierResponse, the result of executor.identifier.
+type IdentifierResponse struct {
+	Identifier string `json:"identifier"`
+}
+
+// ExecutorRequest is the part of pluginapi.ExecutorRequest (plus the host's rpcExecutorRequest
+// stream_id and host_callback_id) the plugin reads; no json tags: capitalised keys. Headers and Query
+// are http.Header and url.Values on the host, both map[string][]string on the wire.
+type ExecutorRequest struct {
+	Model           string
+	Format          string
+	Stream          bool
+	Alt             string
+	Headers         map[string][]string
+	Query           map[string][]string
+	OriginalRequest []byte
+	SourceFormat    string
+	Payload         []byte
+	StreamID        string `json:"stream_id,omitempty"`
+	HostCallbackID  string `json:"host_callback_id,omitempty"`
+}
+
+// ExecutorResponse is pluginapi.ExecutorResponse (no json tags: capitalised keys); Payload is base64.
+type ExecutorResponse struct {
+	Payload []byte
+	Headers map[string][]string
+}
+
+// HostModelRequest is pluginapi.HostModelExecutionRequest plus the host_callback_id that ties the
+// callback to the request being served (snake_case tags, Body is base64).
+type HostModelRequest struct {
+	EntryProtocol  string              `json:"entry_protocol"`
+	ExitProtocol   string              `json:"exit_protocol"`
+	Model          string              `json:"model"`
+	Stream         bool                `json:"stream"`
+	Body           []byte              `json:"body"`
+	Headers        map[string][]string `json:"headers"`
+	Query          map[string][]string `json:"query"`
+	Alt            string              `json:"alt"`
+	HostCallbackID string              `json:"host_callback_id,omitempty"`
+}
+
+// HostModelResponse is pluginapi.HostModelExecutionResponse (snake_case tags, Body is base64).
+type HostModelResponse struct {
+	StatusCode int                 `json:"status_code"`
+	Headers    map[string][]string `json:"headers"`
+	Body       []byte              `json:"body"`
 }
 
 // ManagementRegistrationResponse is rpcManagementRegistrationResponse.
@@ -188,6 +276,19 @@ func OKEnvelope(result any) ([]byte, error) {
 		return nil, err
 	}
 	return Marshal(Envelope{OK: true, Result: raw})
+}
+
+// ErrorEnvelopeStatus builds a failed envelope that carries the HTTP status the host surfaces to the
+// client (the host defaults to 500 when it is 0) and an optional retry hint.
+func ErrorEnvelopeStatus(code, message string, status, retryAfterSeconds int) []byte {
+	raw, err := Marshal(Envelope{OK: false, Error: &Error{
+		Code: code, Message: message, HTTPStatus: status, RetryAfterSeconds: retryAfterSeconds,
+		Retryable: status == 429 || status == 502 || status == 503 || status == 504,
+	}})
+	if err != nil {
+		return []byte(`{"ok":false,"error":{"code":"internal_error","message":"encode failure"}}`)
+	}
+	return raw
 }
 
 // ErrorEnvelope builds a failed envelope. It never fails: the inputs are plain strings.

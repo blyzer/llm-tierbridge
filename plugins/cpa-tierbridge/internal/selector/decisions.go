@@ -13,15 +13,36 @@ type Decision struct {
 	Tools          bool      `json:"tools"`
 	Image          bool      `json:"image"`
 	// Handled is false when the plugin left the request to the host (nothing fits, or an error).
-	Handled  bool   `json:"handled"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Rank     int    `json:"rank,omitempty"`
-	Of       int    `json:"of,omitempty"`
+	Handled bool `json:"handled"`
+	// Model is the candidate that answered (or, when none did, the last one tried).
+	Model string `json:"model,omitempty"`
+	Rank  int    `json:"rank,omitempty"`
+	Of    int    `json:"of,omitempty"`
+	// Status is the HTTP status of the final answer (executed requests only).
+	Status int `json:"status,omitempty"`
 	// Unpriced marks a pick whose price is unknown: budget math counts it as 0.
 	Unpriced bool   `json:"unpriced,omitempty"`
 	Reason   string `json:"reason"`
 	Skips    []Skip `json:"skips,omitempty"`
+	// Attempts are the host.model.execute calls the executor made, in order (executed requests only).
+	Attempts []Attempt `json:"attempts,omitempty"`
+}
+
+// Attempt is one host.model.execute call of the executor.
+type Attempt struct {
+	Rank  int    `json:"rank"`
+	Model string `json:"model"`
+	// Status is the HTTP status the host answered with (0: no answer, e.g. a transport error or timeout).
+	Status int `json:"status"`
+	// OK is true for the attempt whose answer was returned to the client.
+	OK bool `json:"ok"`
+	// Error is a short description of the failure ("" for a success).
+	Error string `json:"error,omitempty"`
+	// Fallback tells whether the executor moved on to the next candidate after this attempt.
+	Fallback bool `json:"fallback,omitempty"`
+	// CoolingDown tells whether the failure put the candidate on cooldown.
+	CoolingDown bool  `json:"coolingDown,omitempty"`
+	DurationMs  int64 `json:"durationMs"`
 }
 
 // Recorder is a fixed-size ring of the most recent decisions.

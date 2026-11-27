@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,11 @@ type Handler struct {
 	persist   *accounting.Persister
 	decisions *selector.Recorder
 	usageSeen *usageRing
+
+	// host is the callback into the host (see SetHost); execTimeout overrides the configured
+	// executor deadline when non-zero (tests).
+	host        HostCaller
+	execTimeout time.Duration
 
 	// beforeManagement is a test hook run before a management route is served.
 	beforeManagement func(route string)
@@ -84,7 +90,7 @@ func (h *Handler) Handle(method string, request []byte) (out []byte) {
 	defer func() {
 		if r := recover(); r != nil {
 			h.noteError(fmt.Sprintf("%s: panic: %v", method, r))
-			out = wire.ErrorEnvelope(wire.ErrorCodeInternal, fmt.Sprintf("%s: internal error", method))
+			out = wire.ErrorEnvelopeStatus(wire.ErrorCodeInternal, fmt.Sprintf("%s: internal error", method), http.StatusInternalServerError, 0)
 		}
 	}()
 	switch method {
@@ -95,6 +101,17 @@ func (h *Handler) Handle(method string, request []byte) (out []byte) {
 		return h.ok(struct{}{})
 	case wire.MethodModelRoute:
 		return h.ok(h.route(request))
+	case wire.MethodExecutorIdentifier:
+		return h.ok(wire.IdentifierResponse{Identifier: PluginName})
+	case wire.MethodExecutorExecute:
+		return h.execute(request)
+	case wire.MethodExecutorStream:
+		return notImplemented("streaming is not supported by the tierbridge executor yet")
+	case wire.MethodExecutorCountTokens:
+		// not_implemented keeps the model available for the host (it is not a failure to cool).
+		return notImplemented("token counting is not supported by the tierbridge executor")
+	case wire.MethodExecutorHTTP:
+		return notImplemented("the tierbridge executor has no HTTP passthrough")
 	case wire.MethodUsageHandle:
 		return h.usage(request)
 	case wire.MethodManagementRegister:
@@ -174,7 +191,15 @@ func Registration() wire.Registration {
 			Logo:             "",
 			ConfigFields:     ConfigFields(),
 		},
-		Capabilities: wire.Capabilities{ModelRouter: true, UsagePlugin: true, ManagementAPI: true},
+		Capabilities: wire.Capabilities{
+			ModelRouter:           true,
+			Executor:              true,
+			ExecutorModelScope:    wire.ExecutorModelScopeStatic,
+			ExecutorInputFormats:  ExecutorFormats,
+			ExecutorOutputFormats: ExecutorFormats,
+			UsagePlugin:           true,
+			ManagementAPI:         true,
+		},
 	}
 }
 
@@ -193,8 +218,12 @@ func ConfigFields() []wire.ConfigField {
 			Description: "File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written within ~1 s of a change). Empty means no persistence."},
 		{Name: "decisions-keep", Type: wire.ConfigFieldInteger, Default: config.DefaultDecisionsKeep,
 			Description: "How many recent routing decisions the management status keeps."},
+		{Name: "max-attempts", Type: wire.ConfigFieldInteger, Default: config.DefaultMaxAttempts,
+			Description: "How many candidates one request may try through the host before the last error is returned (1 to 50)."},
+		{Name: "deadline-seconds", Type: wire.ConfigFieldInteger, Default: config.DefaultDeadlineSeconds,
+			Description: "Seconds one request may take across all its attempts before it is answered with 504. 0 means no deadline."},
 		{Name: "debug-force-error", Type: wire.ConfigFieldBoolean, Default: false,
-			Description: "TEST SWITCH ONLY: makes model routing fail internally so an acceptance run can prove the host falls through."},
+			Description: "TEST SWITCH ONLY: makes model routing and execution fail internally so an acceptance run can prove the host falls through."},
 	}
 }
 
@@ -229,7 +258,9 @@ func (h *Handler) Status() Status {
 }
 
 // route serves model.route. Anything that is not an alias request, and every internal failure, is
-// answered with Handled:false so the host carries on with its normal model resolution.
+// answered with Handled:false so the host carries on with its normal model resolution. A request the
+// plugin can serve is answered with TargetKind "self": the host then calls executor.execute, which
+// picks the candidate, reserves its quota and falls back (route only previews, it consumes nothing).
 func (h *Handler) route(request []byte) (resp wire.ModelRouteResponse) {
 	var (
 		alias     bool
@@ -262,6 +293,9 @@ func (h *Handler) route(request []byte) (resp wire.ModelRouteResponse) {
 		return h.unhandled(requested, est, "undecodable route request: "+err.Error())
 	}
 	est = estimate.FromBody(req.Body)
+	if req.Stream {
+		return h.unhandled(requested, est, "streaming is not supported yet: left to the host")
+	}
 
 	// A router file problem is not a routing error: the previous good version keeps serving, and the
 	// problem stays visible in Status().Router.Error until the file is fixed.
@@ -278,20 +312,13 @@ func (h *Handler) route(request []byte) (resp wire.ModelRouteResponse) {
 		return h.unhandled(requested, est, fmt.Sprintf("router file has no alias %q", cfg.Alias))
 	}
 
-	now := h.now()
-	out := selector.Select(est, entry.Candidates, req.AvailableProviders, h.acct, now)
+	out := selector.Select(est, entry.Candidates, nil, h.now())
 	reason := out.Reason()
-	h.record(requested, est, out, reason)
 	if out.Picked == nil {
+		h.record(requested, est, out, reason)
 		return wire.ModelRouteResponse{Reason: reason}
 	}
-	return wire.ModelRouteResponse{
-		Handled:     true,
-		TargetKind:  wire.ModelRouteTargetProvider,
-		Target:      out.Picked.Provider,
-		TargetModel: out.Picked.Model,
-		Reason:      reason,
-	}
+	return wire.ModelRouteResponse{Handled: true, TargetKind: wire.ModelRouteTargetSelf, Reason: reason}
 }
 
 // unhandled answers Handled:false and records why in the decision ring.
@@ -300,8 +327,10 @@ func (h *Handler) unhandled(requested string, est estimate.Request, reason strin
 	return wire.ModelRouteResponse{Reason: reason}
 }
 
+// record adds a route-time decision for a request the plugin left to the host; requests it serves are
+// recorded by execute, with their attempts.
 func (h *Handler) record(requested string, est estimate.Request, out selector.Outcome, reason string) {
-	d := selector.Decision{
+	h.decisions.Add(selector.Decision{
 		Time:           h.now(),
 		RequestedModel: requested,
 		EstTokens:      est.Tokens,
@@ -310,12 +339,7 @@ func (h *Handler) record(requested string, est estimate.Request, out selector.Ou
 		Reason:         reason,
 		Of:             out.Of,
 		Skips:          out.Skips,
-	}
-	if out.Picked != nil {
-		d.Handled, d.Provider, d.Model, d.Rank = true, out.Picked.Provider, out.Picked.Model, out.Rank
-		d.Unpriced = out.Picked.Unpriced()
-	}
-	h.decisions.Add(d)
+	})
 }
 
 // peekRequestedModel reads "RequestedModel" from a model.route request without decoding the rest:

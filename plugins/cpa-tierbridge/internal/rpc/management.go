@@ -226,7 +226,6 @@ type costView struct {
 
 type candidateView struct {
 	Rank          int        `json:"rank"`
-	Provider      string     `json:"provider"`
 	Model         string     `json:"model"`
 	ID            string     `json:"id"`
 	ContextWindow int        `json:"contextWindow"`
@@ -260,7 +259,7 @@ func (h *Handler) candidatesView() candidatesDoc {
 			in = []string{}
 		}
 		doc.Candidates = append(doc.Candidates, candidateView{
-			Rank: i + 1, Provider: c.Provider, Model: c.Model, ID: c.ID,
+			Rank: i + 1, Model: c.Model, ID: c.ID,
 			ContextWindow: c.ContextWindow, MaxTokens: c.MaxTokens, SupportsTools: c.SupportsTools,
 			Input:    in,
 			Cost:     costView{Status: c.Cost.Status, Input: c.Cost.Input, Output: c.Cost.Output},
@@ -297,9 +296,10 @@ func (h *Handler) budgetView() accounting.Budget {
 // ---- decisions ----------------------------------------------------------------------------------
 
 type chosenView struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Rank     int    `json:"rank"`
+	Model string `json:"model"`
+	Rank  int    `json:"rank"`
+	// Status is the HTTP status of the answer returned to the client.
+	Status int `json:"status"`
 }
 
 type decisionView struct {
@@ -309,6 +309,11 @@ type decisionView struct {
 	Reason          string          `json:"reason"`
 	Skipped         []selector.Skip `json:"skipped"`
 	EstimatedTokens int             `json:"estimatedTokens"`
+	// Attempts are the host.model.execute calls made for the request, in order; empty for a request
+	// the plugin left to the host.
+	Attempts []selector.Attempt `json:"attempts"`
+	// Status is the HTTP status of the final answer of an executed request (0 when not executed).
+	Status int `json:"status"`
 }
 
 type decisionsDoc struct {
@@ -335,12 +340,15 @@ func (h *Handler) decisionsResponse(query map[string][]string) wire.ManagementRe
 	doc := decisionsDoc{Limit: limit, Decisions: make([]decisionView, 0, len(recent))}
 	for _, d := range recent {
 		v := decisionView{Time: d.Time, RequestedModel: d.RequestedModel, Reason: d.Reason,
-			Skipped: d.Skips, EstimatedTokens: d.EstTokens}
+			Skipped: d.Skips, EstimatedTokens: d.EstTokens, Attempts: d.Attempts, Status: d.Status}
 		if v.Skipped == nil {
 			v.Skipped = []selector.Skip{}
 		}
-		if d.Handled {
-			v.Chosen = &chosenView{Provider: d.Provider, Model: d.Model, Rank: d.Rank}
+		if v.Attempts == nil {
+			v.Attempts = []selector.Attempt{}
+		}
+		if n := len(d.Attempts); n > 0 && d.Attempts[n-1].OK {
+			v.Chosen = &chosenView{Model: d.Model, Rank: d.Rank, Status: d.Status}
 		}
 		doc.Decisions = append(doc.Decisions, v)
 	}
