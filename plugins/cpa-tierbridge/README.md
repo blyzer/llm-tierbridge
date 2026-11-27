@@ -85,7 +85,8 @@ and, for `Failed` with status 429 or >= 500, starts a cooldown. Candidates with 
 the previous write is more than 1 s old, otherwise within 1 s of that write, so at most about one write per
 second. Pending state is also flushed synchronously on `plugin.quiesce`, on `plugin.shutdown` and from the
 C shutdown hook (`cliproxyPluginShutdown`); the host did not send `plugin.shutdown` when the process was
-stopped, so whether it invokes the C hook on SIGTERM is unverified until the scratch acceptance is re-run
+stopped. In the scratch acceptance a SIGTERM 0.2 s after a change still left the state file equal to the live counters,
+so some shutdown path flushed; which one (the C hook or `plugin.quiesce`) is not visible because the plugin logs nothing
 (without it, a stop can lose up to about 1 s of changes). Loaded on start and reconfigure with expired
 windows dropped. A corrupted file starts empty and is reported in the status. Decisions are not persisted.
 
