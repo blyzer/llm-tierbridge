@@ -308,6 +308,81 @@ archivo (hoy CLIProxyAPI responde 401 a la de `easycliproxy`), omp no descubre n
 «no non-empty `models` array» en lugar de usar un roster viejo. Los tramos de precio (142 modelos de
 easycliproxy) no se exportan; `thinking` de modo `toggle`/`budget` no tiene forma en `ThinkingConfig` de omp.
 
+## Rebanada 4: pipeline de sincronizado (`tierbridge sync`)
+
+Mantiene al día, sin intervención y sin aplicar nada solo, lo que las demás rebanadas calculan (`docs/design.md` §3 y §6.4).
+Los datos viven en un **repo git privado y aparte** (las listas de las pasarelas del autor no se publican): cada sincronizado abre
+una rama `sync/<fecha>` y un PR con el diff clasificado; fusionar el PR es aceptar. Aplicar a omp es un comando manual.
+
+```sh
+tierbridge sync init --data-repo ~/repositories/llm-tierbridge-data [--remote git@github.com:blyzer/llm-tierbridge-data.git]
+tierbridge sync run   --data-repo ~/repositories/llm-tierbridge-data [--source S]... [--force] [--no-push] [--no-pr]
+tierbridge sync apply --data-repo ~/repositories/llm-tierbridge-data --models-yml ~/.omp/agent/models.yml [--dry-run]
+tierbridge sync install-launchd [--hour 6] --data-repo ~/repositories/llm-tierbridge-data [--dry-run]
+tierbridge sync uninstall-launchd [--dry-run]
+```
+
+**Repo de datos** (lo crea `sync init`, con un commit en `main`):
+
+| Ruta | Contenido |
+|---|---|
+| `sync-state.json` | por fuente: `revision` (etag, commit git o `sha256:`), `sha256`, `fetchedAt`, `count`, `cadence`, `lastSyncedAt`. Solo avanza dentro del PR |
+| `index/<fuente>.jsonl` | una línea ordenada por observación (`provider`, `id`, `authType`, límites, coste, ciclo de vida, esfuerzos, modalidades de entrada, `kind`); sin marcas de tiempo, así que `git diff` solo muestra cambios reales. `omp-live:dsh` se guarda como `omp-live_dsh.jsonl` |
+| `overrides/omp.yml` | salida de `export omp` con `--current` de los rosters `omp-live` |
+| `reports/<fecha>.md` y `.json` | diff clasificado y resumen de la ejecución (el `.md` es el cuerpo del PR) |
+| `overrides.json` | excepciones escritas a mano (`configured`, ver «Rebanada 3c»); `{}` al crear |
+
+Las descargas en bruto, los clones git y el `catalog.json` fusionado **no se versionan**: están en `~/.cache/llm-tierbridge/`
+(`raw/<sha256>`, `repos/`, `last/`, `latest.json`; se cambia con `--cache-dir` o `$TIERBRIDGE_CACHE_DIR`).
+
+**`sync run`**, por orden: (a) refresca solo las fuentes que tocan; (b) valida; (c) clasifica el diff contra `index/`; (d) fusiona
+todas las fuentes con `overrides.json`, regenera `overrides/omp.yml` y, si algo cambió, crea la rama, hace commit, empuja y abre el
+PR con `gh pr create` (`--no-pr`: solo empuja; `--no-push`: solo commit local). Sin cambios no crea rama: «nothing to sync».
+Si ya hay una rama `sync/*` sin fusionar con exactamente lo mismo, tampoco crea otra. Nada se escribe en el repo de datos hasta
+que todo lo anterior salió bien.
+
+| Fuente | Cadencia | Cómo se obtiene |
+|---|---|---|
+| `models.dev` | diaria (≥ 20 h) | `https://models.dev/api.json` |
+| `modelparams.dev` | semanal (≥ 6 días) | `https://modelparams.dev/api/v1/models.json` |
+| `cliproxyapi-cache` | diaria | `~/.omp/agent/cliproxyapi-models.json` (solo lectura) |
+| `omp-live:easycliproxy`, `omp-live:dsh` | diaria | `tierbridge snapshot omp-live` (necesita la clave en el entorno) |
+| `router-for-me.models`, `dsh`, `freellmapi` | cuando cambia el `HEAD` del upstream (`git ls-remote`) | clon en `~/.cache/llm-tierbridge/repos/` + `tools/snapshot-git.mjs` / `tools/snapshot-freellmapi.mjs` (Node ≥ 24). `dsh` y `freellmapi` con `--depth 1`; `router-for-me.models` con historial completo, porque su lista de retirados sale de él |
+
+`omp-bundled` no se sincroniza (es solo de control: nunca gana un campo). La última instantánea de cada fuente se recuerda en
+`latest.json`, así que una fuente que no toca se reutiliza de la caché y no se vuelve a descargar. `--input FUENTE=ARCHIVO`
+usa una instantánea guardada en lugar de descargar (así corren las pruebas, sin red).
+
+**Falla en alto.** Un cambio de formato aguas arriba (el adaptador no entiende el documento), una fuente sin modelos o una que
+**encoge más del 20 %** respecto a `sync-state.json` (`--max-shrink-percent N`) hacen que `sync run` salga con código ≠ 0,
+escriba una línea con fecha en stderr, lance una notificación de macOS (`osascript`; se omite con `--no-notify` o
+`$TIERBRIDGE_NO_NOTIFY`) y **no toque el repo de datos** (sin rama, `git status` limpio). La prueba
+`a_format_change_fails_loud_and_leaves_the_data_repo_untouched` lo comprueba.
+
+**Diff clasificado**, por fuente: añadidos, retirados, límite, coste, ciclo de vida, esfuerzos y otros cambios; los modelos que no
+son de chat (`kind` distinto de `chat`) van aparte como «fuera de alcance». El informe lista hasta 20 por clase y el `.json` hasta 200.
+
+**`sync apply`** hace `git pull --ff-only origin main` en el repo de datos (debe estar en `main`; con `--dry-run` también tira, solo
+protege `models.yml`) y luego el `apply omp` de la rebanada 5a con `overrides/omp.yml`: copia de seguridad, idempotente.
+
+**launchd.** `install-launchd` escribe `~/Library/LaunchAgents/dev.blyzer.llm-tierbridge.sync.plist` (diario a las 6:00; registros en
+`~/Library/Logs/llm-tierbridge/sync.{out,err}.log`) y un script envoltorio en
+`~/Library/Application Support/llm-tierbridge/sync-launchd.sh`, y lo carga con `launchctl bootstrap` (`--no-load` no lo carga;
+`--dry-run` solo imprime ambos). launchd no hereda el entorno, y el descubrimiento de omp necesita claves (p. ej.
+`EASYCLIPROXY_API_KEY`): el envoltorio las lee del llavero de macOS antes de lanzar `sync run`. Para añadir una:
+
+```sh
+security add-generic-password -s llm-tierbridge -a EASYCLIPROXY_API_KEY -w     # pide el valor; no lo escribas en la línea de comandos
+tierbridge sync install-launchd --data-repo … --keychain-var EASYCLIPROXY_API_KEY --keychain-var OTRA_CLAVE
+```
+
+La lista de variables (`--keychain-var`, repetible; por defecto solo `EASYCLIPROXY_API_KEY`) queda escrita en el envoltorio: para
+cambiarla se vuelve a ejecutar `install-launchd`. Si falta un elemento del llavero, el envoltorio avisa por stderr y sigue: el
+descubrimiento de omp falla y la ejecución falla en alto. `uninstall-launchd` descarga y borra el plist y el envoltorio.
+
+Requisitos del trabajo programado: `git`, `gh` (con sesión), `node` ≥ 24 y la instalación de omp 19.2.1 de Tern; el envoltorio fija
+`PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`.
+
 ## Pruebas
 
 ```sh
