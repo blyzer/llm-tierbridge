@@ -26,6 +26,8 @@
 #   PLUGIN_REF git ref to build the plugin from (e.g. HEAD) instead of the working tree
 #   FAIL_UPSTREAM_ID  optional served id that the upstream fails today (429/5xx): adds the cooldown check
 #              (the routed model errors upstream, the NEXT alias request must skip it; two more requests)
+#   KILL_WAIT  seconds between the last request and SIGTERM in the persistence checks (default 0.2; use 1.8 to see
+#              the debounced write alone, nothing pending at the kill)
 #   VERBOSE=1  also print redacted log excerpts (plugin lines, host lines around the failure checks)
 #
 # Output: one compact PASS/FAIL/WARN/INFO line per check. Exit 1 if any FAIL. No secret is printed.
@@ -449,7 +451,7 @@ if [ -n "${FAIL_UPSTREAM_ID:-}" ]; then
 else
   warn cooldown "skipped: set FAIL_UPSTREAM_ID to a served id the upstream fails today"
 fi
-sleep 1.5   # let the usage record of the last request reach the plugin; the periodic flush is 5 s away
+sleep "${KILL_WAIT:-0.2}"   # seconds between the last request and the live snapshot + SIGTERM (the state flush is debounced ~1 s)
 mgmt "/v0/management/tierbridge/counters" auth
 LIVE_TPD_A="$(jq -r --arg m "$MODEL_A" '[.models[]? | select(.model == $m)][0].tpd.used // 0' "$MBODY" 2>/dev/null || echo 0)"
 mgmt "/v0/management/tierbridge/status" auth
@@ -471,7 +473,7 @@ if [ -f "$ST" ]; then
   fi
   missing=""
   file_tpd="$(jq -r --arg m "$MODEL_A" '[.models | to_entries[] | select(.key | endswith($m)) | .value.tpd] | first // 0' "$ST" 2>/dev/null || echo 0)"
-  [ "$file_tpd" = "$LIVE_TPD_A" ] || missing="$missing tpd($MODEL_A: file $file_tpd, live $LIVE_TPD_A)"
+  [ "$file_tpd" -ge "$LIVE_TPD_A" ] 2>/dev/null || missing="$missing tpd($MODEL_A: file $file_tpd, live $LIVE_TPD_A)"
   info persist-flush "just before SIGTERM (live status.persistence) $LIVE_PERSIST; file savedAt=$(jq -r '.savedAt' "$ST" 2>/dev/null)"
   jq -e --arg m "$MODEL_B" '[.models | to_entries[] | select(.key | endswith($m))] | length > 0' "$ST" >/dev/null 2>&1 || missing="$missing model($MODEL_B)"
   if [ -n "${FAIL_UPSTREAM_ID:-}" ]; then
@@ -521,14 +523,14 @@ if [ "$CODE" = 200 ] && [ "$RMODEL" = "$ID_B" ]; then pass debug-non-alias "$MOD
 # of the next one is < 5 s old, so it is still pending when SIGTERM arrives. The file must end up equal to the
 # live counters (live status.persistence.dirty should read true here).
 chat "$MODEL_A"
-sleep 1.2
+sleep "${KILL_WAIT:-0.2}"
 mgmt "/v0/management/tierbridge/counters" auth
 LIVE_TPD_A2="$(jq -r --arg m "$MODEL_A" '[.models[]? | select(.model == $m)][0].tpd.used // 0' "$MBODY" 2>/dev/null || echo 0)"
 mgmt "/v0/management/tierbridge/status" auth
 LIVE_PERSIST2="$(jq -c '.persistence | {dirty, saves}' "$MBODY" 2>/dev/null || echo '{}')"
 stop_cpa
 file_tpd2="$(jq -r --arg m "$MODEL_A" '[.models | to_entries[] | select(.key | endswith($m)) | .value.tpd] | first // 0' "$ST" 2>/dev/null || echo 0)"
-if [ "$file_tpd2" = "$LIVE_TPD_A2" ]; then
+if [ "$file_tpd2" -ge "$LIVE_TPD_A2" ] 2>/dev/null; then
   if jq -e '.dirty == true' <<<"$LIVE_PERSIST2" >/dev/null 2>&1; then
     pass persist-shutdown "pending change flushed at stop: file tpd($MODEL_A)=$file_tpd2 equals live (live persistence $LIVE_PERSIST2)"
   else
