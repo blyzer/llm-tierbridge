@@ -109,10 +109,11 @@ impl SourceIndex {
                 row.id.clone(),
                 row.auth_type.clone().unwrap_or_default(),
             );
-            if index.rows.contains_key(&key) {
-                index.duplicates += 1;
-            } else {
-                index.rows.insert(key, row);
+            match index.rows.entry(key) {
+                std::collections::btree_map::Entry::Occupied(_) => index.duplicates += 1,
+                std::collections::btree_map::Entry::Vacant(v) => {
+                    v.insert(row);
+                }
             }
         }
         index
@@ -201,7 +202,7 @@ mod tests {
         assert_eq!(order, ["a", "a", "z"]);
         assert!(
             text.lines()
-                .nth(0)
+                .next()
                 .unwrap()
                 .contains("\"authType\":\"api_key\"")
         );

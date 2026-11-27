@@ -162,7 +162,7 @@ fn export_summary(export: &OmpExport, out_path: &Path, with_thinking: bool) -> S
 pub struct ApplyOmpArgs {
     /// omp's `models.yml` (edited in place; a backup is written next to it first).
     #[arg(long, value_name = "FILE")]
-    models_yml: PathBuf,
+    pub(crate) models_yml: PathBuf,
     /// File written by `export omp`: sets the managed blocks to exactly its providers.
     #[arg(
         long,
@@ -170,13 +170,13 @@ pub struct ApplyOmpArgs {
         required_unless_present = "revert",
         conflicts_with = "revert"
     )]
-    overrides: Option<PathBuf>,
+    pub(crate) overrides: Option<PathBuf>,
     /// Remove every managed block instead (the file goes back to what it was before `apply`).
     #[arg(long)]
-    revert: bool,
+    pub(crate) revert: bool,
     /// Show what would change; write nothing (no backup either).
     #[arg(long)]
-    dry_run: bool,
+    pub(crate) dry_run: bool,
 }
 
 fn now_ms() -> i64 {
@@ -241,21 +241,21 @@ fn plan_summary(plan: &EditPlan, args: &ApplyOmpArgs) -> String {
 pub struct SnapshotOmpLiveArgs {
     /// omp provider to list (`easycliproxy`, `dsh`).
     #[arg(long, value_name = "NAME")]
-    provider: String,
+    pub(crate) provider: String,
     /// The omp binary. Default: `$TIERBRIDGE_OMP`, else the Tern install of omp 19.2.1. The `omp`
     /// on PATH is never used.
     #[arg(long, value_name = "PATH")]
-    omp: Option<PathBuf>,
+    pub(crate) omp: Option<PathBuf>,
     /// Agent directory whose `models.yml` is read [default: `$PI_CODING_AGENT_DIR`, else
     /// `~/.omp/agent`]. Only `models.yml` is copied; the directory is never written.
     #[arg(long, value_name = "DIR")]
-    agent_dir: Option<PathBuf>,
+    pub(crate) agent_dir: Option<PathBuf>,
     /// Write the roster here instead of stdout (input of `catalog build --source omp-live:<p>`).
     #[arg(long, value_name = "FILE")]
-    out: Option<PathBuf>,
+    pub(crate) out: Option<PathBuf>,
     /// Give up on omp after this many seconds.
     #[arg(long, value_name = "SECS", default_value_t = 120)]
-    timeout: u64,
+    pub(crate) timeout: u64,
 }
 
 /// Scratch agent directory (mode 0700), removed on drop.
@@ -332,17 +332,18 @@ fn omp_binary(arg: Option<&Path>) -> Result<PathBuf, Failure> {
     }
 }
 
-fn run_with_timeout(
+pub(crate) fn run_with_timeout(
     mut cmd: std::process::Command,
     timeout: Duration,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
     use std::process::Stdio;
+    let program = cmd.get_program().to_string_lossy().into_owned();
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start omp: {e}"))?;
+        .map_err(|e| format!("could not start {program}: {e}"))?;
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -376,7 +377,7 @@ fn run_with_timeout(
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
-                    "omp did not finish within {}s; killed",
+                    "{program} did not finish within {}s; killed",
                     timeout.as_secs()
                 ));
             }
