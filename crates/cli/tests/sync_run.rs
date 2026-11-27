@@ -546,3 +546,118 @@ fn bad_arguments_fail_before_anything_happens() {
     assert!(!out.status.success());
     assert!(text(&out.stderr).contains("uncommitted changes"));
 }
+
+const MODELS_YML: &str = "\
+# comments survive
+providers:
+  easycliproxy:
+    baseUrl: http://127.0.0.1:8317/v1
+    apiKey: sk-not-a-real-key
+    discovery:
+      type: openai-models-list
+
+  dsh:
+    baseUrl: http://127.0.0.1:8326/v1
+";
+
+fn apply_cmd(data: &Path, models: &Path, extra: &[&str]) -> Output {
+    Command::new(BIN)
+        .args(["sync", "apply", "--data-repo"])
+        .arg(data)
+        .arg("--models-yml")
+        .arg(models)
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn apply_pulls_the_accepted_overrides_and_writes_them_into_models_yml() {
+    let env = Env::new("apply");
+    env.init_with_remote();
+    // A second clone, the one on the machine that runs omp: it starts without any overrides.
+    let clone = env.dir.join("clone");
+    let out = Command::new("git")
+        .args(["clone", "--quiet"])
+        .arg(env.remote())
+        .arg(&clone)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let models = env.dir.join("models.yml");
+    fs::write(&models, MODELS_YML).unwrap();
+
+    let none = apply_cmd(&clone, &models, &[]);
+    assert!(!none.status.success());
+    assert!(
+        text(&none.stderr).contains("merge its PR first"),
+        "{}",
+        text(&none.stderr)
+    );
+
+    // The sync machine proposes, the PR is merged and main pushed.
+    let run = env.run(&["--no-pr", "--now", NOW]);
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    env.accept("sync/2026-11-27");
+    env.git(&["push", "--quiet", "origin", "main"]);
+
+    let before = fs::read_to_string(&models).unwrap();
+    let dry = apply_cmd(&clone, &models, &["--dry-run"]);
+    assert!(dry.status.success(), "{}", text(&dry.stderr));
+    assert!(
+        text(&dry.stdout).contains("dry run"),
+        "{}",
+        text(&dry.stdout)
+    );
+    assert_eq!(
+        fs::read_to_string(&models).unwrap(),
+        before,
+        "dry run wrote"
+    );
+    assert!(
+        clone.join("overrides/omp.yml").is_file(),
+        "the dry run pulls the data repo"
+    );
+
+    let out = apply_cmd(&clone, &models, &[]);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{}\n{stdout}", text(&out.stderr));
+    assert!(
+        stdout.contains("git pull --ff-only origin main"),
+        "{stdout}"
+    );
+    assert!(clone.join("overrides/omp.yml").is_file());
+    let after = fs::read_to_string(&models).unwrap();
+    assert!(
+        after.contains("tierbridge-managed modelOverrides"),
+        "{after}"
+    );
+    assert!(after.starts_with("# comments survive"));
+    let backups = fs::read_dir(&env.dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("models.yml."))
+        .count();
+    assert_eq!(backups, 1, "one backup next to models.yml");
+
+    let again = apply_cmd(&clone, &models, &[]);
+    assert!(again.status.success());
+    assert!(
+        text(&again.stdout).contains("already up to date"),
+        "{}",
+        text(&again.stdout)
+    );
+    assert_eq!(fs::read_to_string(&models).unwrap(), after);
+
+    // Only accepted overrides: a feature branch is refused.
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["checkout", "--quiet", "-b", "scratch"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let refused = apply_cmd(&clone, &models, &[]);
+    assert!(!refused.status.success());
+    assert!(text(&refused.stderr).contains("not `main`"));
+}
