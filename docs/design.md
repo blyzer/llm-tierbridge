@@ -146,6 +146,13 @@ generado por el binario Rust. Así sirve a los dos omp.
    acotar `references[]` (el catálogo ocupa 28 MB, ~6,8 KB por modelo).
 4. **Pipeline de sincronizado** (a–e de §3) con PR clasificado y `overrides.json`. Aceptación: un cambio
    simulado de formato aguas arriba hace fallar el job sin tocar el catálogo.
+   **Hecho (2026-11-27, `560da9a`):** `tierbridge sync init|run|apply|install-launchd`. Los datos viven en un
+   repo privado aparte (índice compacto por fuente, `sync-state.json`, `overrides/omp.yml`, informes); cada
+   cambio abre un PR con el diff clasificado (añadido, retirado, límite, coste, ciclo de vida, esfuerzos,
+   fuera de alcance). Un cambio de formato o una caída de más del 20 % hace fallar el job sin tocar el
+   repo de datos y avisa con una notificación de macOS. `sync apply` es manual. Job diario de launchd a
+   las 06:00; las claves salen del Llavero (`security … -s llm-tierbridge`). Pendiente: cerrar
+   automáticamente ramas de sincronizado obsoletas y avisar también de los éxitos.
 5. **Integración**: generar desde el catálogo el bloque `openai-compatibility` de CLIProxyAPI y exportar
    overrides para `easycliproxy`/`dsh`/`omni` en `models.yml` (límites y coste reales). Aceptación:
    CLIProxyAPI recarga la config generada y `/v1/models` lista sus modelos; `omp models easycliproxy --json`
