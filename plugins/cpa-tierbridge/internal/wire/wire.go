@@ -55,7 +55,14 @@ const (
 )
 
 // Host callback methods the plugin issues (pluginabi.MethodHost*).
-const MethodHostModelExecute = "host.model.execute"
+const (
+	MethodHostModelExecute       = "host.model.execute"
+	MethodHostModelExecuteStream = "host.model.execute_stream"
+	MethodHostModelStreamRead    = "host.model.stream_read"
+	MethodHostModelStreamClose   = "host.model.stream_close"
+	MethodHostStreamEmit         = "host.stream.emit"
+	MethodHostStreamClose        = "host.stream.close"
+)
 
 // ModelRouteTargetSelf is pluginapi.ModelRouteTargetSelf: the host runs the request through this
 // plugin's own executor (executor.execute), which then calls back into the host per candidate.
@@ -220,6 +227,48 @@ type HostModelRequest struct {
 	Query          map[string][]string `json:"query"`
 	Alt            string              `json:"alt"`
 	HostCallbackID string              `json:"host_callback_id,omitempty"`
+}
+
+// ExecutorStreamResponse is rpcExecutorStreamResponse, the result of executor.execute_stream: only the
+// headers travel here, the chunks follow asynchronously through host.stream.emit / host.stream.close
+// addressed by the stream_id of the request.
+type ExecutorStreamResponse struct {
+	Headers map[string][]string `json:"headers,omitempty"`
+}
+
+// HostModelStreamResponse is pluginapi.HostModelStreamResponse, the result of host.model.execute_stream.
+type HostModelStreamResponse struct {
+	StatusCode int                 `json:"status_code"`
+	Headers    map[string][]string `json:"headers"`
+	StreamID   string              `json:"stream_id"`
+}
+
+// HostModelStreamRef is pluginapi.HostModelStreamReadRequest and HostModelStreamCloseRequest.
+type HostModelStreamRef struct {
+	StreamID string `json:"stream_id"`
+}
+
+// HostModelStreamChunk is pluginapi.HostModelStreamReadResponse: one chunk, or the terminal state
+// (Done, with Error set when the stream failed). Payload is base64.
+type HostModelStreamChunk struct {
+	Payload []byte `json:"payload"`
+	Error   string `json:"error"`
+	Done    bool   `json:"done"`
+}
+
+// StreamEmitRequest is rpcStreamEmitRequest (host.stream.emit): one chunk for the stream the host opened
+// for executor.execute_stream. Payload is base64.
+type StreamEmitRequest struct {
+	StreamID string `json:"stream_id"`
+	Payload  []byte `json:"payload,omitempty"`
+}
+
+// StreamCloseRequest is rpcStreamCloseRequest (host.stream.close): the end of the stream, with the
+// structured error when it failed (the host surfaces its status and message to the client).
+type StreamCloseRequest struct {
+	StreamID    string `json:"stream_id"`
+	Error       string `json:"error,omitempty"`
+	ErrorDetail *Error `json:"error_detail,omitempty"`
 }
 
 // HostModelResponse is pluginapi.HostModelExecutionResponse (snake_case tags, Body is base64).

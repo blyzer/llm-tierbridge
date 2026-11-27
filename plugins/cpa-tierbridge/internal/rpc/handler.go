@@ -106,7 +106,7 @@ func (h *Handler) Handle(method string, request []byte) (out []byte) {
 	case wire.MethodExecutorExecute:
 		return h.execute(request)
 	case wire.MethodExecutorStream:
-		return notImplemented("streaming is not supported by the tierbridge executor yet")
+		return h.executeStream(request)
 	case wire.MethodExecutorCountTokens:
 		// not_implemented keeps the model available for the host (it is not a failure to cool).
 		return notImplemented("token counting is not supported by the tierbridge executor")
@@ -293,9 +293,6 @@ func (h *Handler) route(request []byte) (resp wire.ModelRouteResponse) {
 		return h.unhandled(requested, est, "undecodable route request: "+err.Error())
 	}
 	est = estimate.FromBody(req.Body)
-	if req.Stream {
-		return h.unhandled(requested, est, "streaming is not supported yet: left to the host")
-	}
 
 	// A router file problem is not a routing error: the previous good version keeps serving, and the
 	// problem stays visible in Status().Router.Error until the file is fixed.

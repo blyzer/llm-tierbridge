@@ -164,17 +164,6 @@ func TestRouteTakesTheAliasWithTheSelfExecutor(t *testing.T) {
 	if c := h.acct.Counters(nil, clock); len(c) != 0 {
 		t.Errorf("counters = %+v", c)
 	}
-	// Streaming and other models are left to the host.
-	var stream wire.ModelRouteResponse
-	raw, _ := wire.Marshal(struct {
-		RequestedModel string
-		Stream         bool
-		Body           []byte
-	}{"tierbridge/auto", true, []byte(chatBody(10, ""))})
-	decode(t, h.Handle(wire.MethodModelRoute, raw), &stream)
-	if stream.Handled || !strings.Contains(stream.Reason, "streaming") {
-		t.Errorf("streaming route = %+v, want Handled:false", stream)
-	}
 }
 
 func TestExecuteFallsBackOnTheFirstFailureInOneCall(t *testing.T) {
@@ -388,7 +377,7 @@ func TestExecutorOtherMethods(t *testing.T) {
 	if env := decode(t, h.Handle(wire.MethodExecutorIdentifier, nil), &id); !env.OK || id.Identifier != PluginName {
 		t.Errorf("identifier = %+v %+v", env, id)
 	}
-	for _, m := range []string{wire.MethodExecutorCountTokens, wire.MethodExecutorHTTP, wire.MethodExecutorStream} {
+	for _, m := range []string{wire.MethodExecutorCountTokens, wire.MethodExecutorHTTP} {
 		env := decode(t, h.Handle(m, execRequest(t, chatBody(5, ""))), nil)
 		if env.OK || env.Error.Code != wire.ErrorCodeNotImplemented || env.Error.HTTPStatus != 501 {
 			t.Errorf("%s = %+v, want not_implemented", m, env.Error)

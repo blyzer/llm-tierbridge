@@ -62,6 +62,11 @@ func fallbackStatus(status int) bool {
 
 // attemptResult is what one host.model.execute call produced.
 type attemptResult struct {
+	// Streaming attempts only: the inner stream, its first output chunk and whether it already ended.
+	streamID string
+	first    []byte
+	done     bool
+
 	status   int
 	headers  map[string][]string
 	body     []byte
@@ -69,9 +74,9 @@ type attemptResult struct {
 	timedOut bool
 }
 
-// callModel runs one host.model.execute and stops waiting after wait (when bounded). A panic of the
+// callHost runs one host callback and stops waiting after wait (when bounded). A panic of the
 // host callback is contained and reported as a failed attempt.
-func callModel(host HostCaller, payload []byte, wait time.Duration, bounded bool) (env []byte, err error, timedOut bool) {
+func callHost(host HostCaller, method string, payload []byte, wait time.Duration, bounded bool) (env []byte, err error, timedOut bool) {
 	type result struct {
 		env []byte
 		err error
@@ -83,7 +88,7 @@ func callModel(host HostCaller, payload []byte, wait time.Duration, bounded bool
 				ch <- result{err: fmt.Errorf("host callback panic: %v", r)}
 			}
 		}()
-		env, err := host.Call(wire.MethodHostModelExecute, payload)
+		env, err := host.Call(method, payload)
 		ch <- result{env: env, err: err}
 	}()
 	if !bounded {
@@ -101,7 +106,7 @@ func callModel(host HostCaller, payload []byte, wait time.Duration, bounded bool
 }
 
 func (h *Handler) attempt(host HostCaller, payload []byte, wait time.Duration, bounded bool) attemptResult {
-	env, err, timedOut := callModel(host, payload, wait, bounded)
+	env, err, timedOut := callHost(host, wire.MethodHostModelExecute, payload, wait, bounded)
 	switch {
 	case timedOut:
 		return attemptResult{err: "deadline exceeded", timedOut: true}
@@ -186,7 +191,13 @@ func filterHeaders(in map[string][]string) map[string][]string {
 // host.model.execute in rank order, falling back on failures that blame the candidate, within
 // max-attempts and the deadline. The alias itself is never executed, so the host cannot route the
 // call back into this plugin (it also skips this plugin's router for the callback).
-func (h *Handler) execute(request []byte) []byte {
+func (h *Handler) execute(request []byte) []byte { return h.run(request, false) }
+
+// executeStream serves executor.execute_stream: the same candidate walk as execute, except that an
+// attempt is only settled once the inner stream delivered its first output chunk; see stream.go.
+func (h *Handler) executeStream(request []byte) []byte { return h.run(request, true) }
+
+func (h *Handler) run(request []byte, stream bool) []byte {
 	cfg, store := h.config()
 	if cfg.DebugForceError {
 		panic("debug-force-error is set")
@@ -195,8 +206,11 @@ func (h *Handler) execute(request []byte) []byte {
 	if err := json.Unmarshal(request, &req); err != nil {
 		return wire.ErrorEnvelopeStatus(wire.ErrorCodeBadRequest, "decode executor request: "+err.Error(), http.StatusBadRequest, 0)
 	}
-	if req.Stream {
-		return notImplemented("streaming is not supported by the tierbridge executor yet")
+	if !stream && req.Stream {
+		return notImplemented("executor.execute is the non-streaming entry point; streams use executor.execute_stream")
+	}
+	if stream && req.StreamID == "" {
+		return wire.ErrorEnvelopeStatus(wire.ErrorCodeBadRequest, "executor stream request has no stream_id", http.StatusBadRequest, 0)
 	}
 	body := req.Payload
 	if len(bytes.TrimSpace(body)) == 0 {
@@ -279,7 +293,7 @@ func (h *Handler) execute(request []byte) []byte {
 			break
 		}
 		payload, err := wire.Marshal(wire.HostModelRequest{
-			EntryProtocol: format, ExitProtocol: format, Model: c.Model, Stream: false,
+			EntryProtocol: format, ExitProtocol: format, Model: c.Model, Stream: stream,
 			Body: withModel(body, c.Model), Headers: headers, Query: req.Query, Alt: req.Alt,
 			HostCallbackID: req.HostCallbackID,
 		})
@@ -288,7 +302,12 @@ func (h *Handler) execute(request []byte) []byte {
 		}
 		tried++
 		began := time.Now()
-		res := h.attempt(host, payload, time.Until(deadline), bounded)
+		var res attemptResult
+		if stream {
+			res = h.attemptStream(host, payload, time.Until(deadline), bounded)
+		} else {
+			res = h.attempt(host, payload, time.Until(deadline), bounded)
+		}
 		at := selector.Attempt{Rank: i + 1, Model: c.Model, Status: res.status, Error: res.err, DurationMs: time.Since(began).Milliseconds()}
 		last, lastModel = res, c.Model
 		d.Model, d.Rank, d.Unpriced = c.Model, i+1, c.Unpriced()
@@ -302,6 +321,9 @@ func (h *Handler) execute(request []byte) []byte {
 				d.Reason += fmt.Sprintf(" after %d attempts", tried)
 			}
 			h.decisions.Add(d)
+			if stream {
+				return h.startPump(host, req.StreamID, res)
+			}
 			raw, err := wire.OKEnvelope(wire.ExecutorResponse{Payload: res.body, Headers: filterHeaders(res.headers)})
 			if err != nil {
 				return wire.ErrorEnvelope(wire.ErrorCodeInternal, "encode executor response")
