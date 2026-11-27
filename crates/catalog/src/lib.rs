@@ -10,6 +10,7 @@ mod diagnostics;
 pub mod dsh;
 mod error;
 pub mod export_cpa;
+pub mod export_cpa_router;
 pub mod freellmapi;
 mod gateway;
 pub mod matching;

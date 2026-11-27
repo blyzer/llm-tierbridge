@@ -13,6 +13,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tierbridge_catalog::{
     BuildOptions, BuildOutput, CatalogError, FetchMeta, MergeOutput, SourceInput,
     export_cpa::{CpaOptions, PLACEHOLDER_KEY, SkipReason, export_cpa},
+    export_cpa_router::{
+        DEFAULT_ALIAS, Profile, RouterOptions, SkipReason as RouterSkipReason, export_cpa_router,
+        provider_key,
+    },
     merge_catalog_with,
     overrides::Overrides,
     time::parse_rfc3339_ms,
@@ -68,6 +72,8 @@ enum Command {
 enum ExportCommand {
     /// `openai-compatibility` block for CLIProxyAPI (config-version 8).
     Cpa(CpaArgs),
+    /// Ranked candidate list behind one alias, for the CLIProxyAPI router plugin (`tierbridge-router.json`).
+    CpaRouter(CpaRouterArgs),
     /// omp `modelOverrides` for the gateway providers (`providers.<p>.modelOverrides`).
     Omp(omp::ExportOmpArgs),
 }
@@ -111,6 +117,50 @@ struct CpaArgs {
     #[arg(long, value_name = "VAR", requires = "out")]
     api_key_env: Option<String>,
     /// Write the fragment here (created with mode 0600) instead of stdout.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum RouterProfile {
+    /// Known-free, then the cheapest known cost (input + output), then unknown cost.
+    FreeFirst,
+}
+
+impl RouterProfile {
+    fn catalog(self) -> Profile {
+        match self {
+            Self::FreeFirst => Profile::FreeFirst,
+        }
+    }
+}
+
+#[derive(Args)]
+struct CpaRouterArgs {
+    /// Merged `catalog.json` (from `catalog build --merge`).
+    #[arg(long, value_name = "FILE")]
+    catalog: PathBuf,
+    /// Gateway whose rows are the candidates: the one `export cpa` writes into CLIProxyAPI.
+    #[arg(long, value_name = "SOURCE_ID")]
+    gateway: String,
+    /// The `--name` given to `export cpa` for this gateway; the candidates' provider is
+    /// `openai-compatible-<name lowercased>` [default: tierbridge-<gateway>].
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
+    /// The `--alias-prefix` given to `export cpa`; `candidate.model` is this plus the model id.
+    #[arg(long, value_name = "TEXT", default_value = "tb-")]
+    alias_prefix: String,
+    /// How candidates are ordered.
+    #[arg(long, value_enum, default_value_t = RouterProfile::FreeFirst)]
+    profile: RouterProfile,
+    /// The alias clients call; the plugin answers it and nothing else.
+    #[arg(long, value_name = "ALIAS", default_value = DEFAULT_ALIAS)]
+    alias: String,
+    /// `observations.freellmapi.jsonl` from `catalog build --source freellmapi`: the free-tier
+    /// limits are not in the merged catalog. Without it every `quota` is null.
+    #[arg(long, value_name = "FILE")]
+    freellmapi_observations: Option<PathBuf>,
+    /// Write the file here (created with mode 0600) instead of stdout.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
 }
@@ -257,6 +307,9 @@ fn main() -> ExitCode {
         Command::Export {
             target: ExportCommand::Cpa(args),
         } => export_cpa_cmd(&args),
+        Command::Export {
+            target: ExportCommand::CpaRouter(args),
+        } => export_cpa_router_cmd(&args),
         Command::Export {
             target: ExportCommand::Omp(args),
         } => omp::export(&args),
@@ -760,6 +813,77 @@ fn export_cpa_cmd(args: &CpaArgs) -> Result<(), Failure> {
     );
     if api_key.is_none() {
         eprintln!("warning: no --api-key-env: the key is the placeholder {PLACEHOLDER_KEY}");
+    }
+    Ok(())
+}
+
+fn export_cpa_router_cmd(args: &CpaRouterArgs) -> Result<(), Failure> {
+    let bytes = std::fs::read(&args.catalog)
+        .map_err(|e| failure(format!("cannot read {}: {e}", args.catalog.display())))?;
+    let observations = args
+        .freellmapi_observations
+        .as_ref()
+        .map(|path| {
+            std::fs::read(path).map_err(|e| failure(format!("cannot read {}: {e}", path.display())))
+        })
+        .transpose()?;
+    let name = args
+        .name
+        .clone()
+        .unwrap_or_else(|| default_provider_name(&args.gateway));
+    let export = export_cpa_router(
+        &bytes,
+        &RouterOptions {
+            gateway: &args.gateway,
+            provider_name: &name,
+            alias_prefix: &args.alias_prefix,
+            alias: &args.alias,
+            profile: args.profile.catalog(),
+            freellmapi_observations: observations.as_deref(),
+        },
+    )?;
+    match &args.out {
+        Some(path) => write_private(path, export.json.as_bytes())
+            .map_err(|e| failure(format!("cannot write {}: {e}", path.display())))?,
+        None => print!("{}", export.json),
+    }
+    let mut counts: BTreeMap<RouterSkipReason, usize> = BTreeMap::new();
+    for (_, reason) in &export.skipped {
+        *counts.entry(*reason).or_default() += 1;
+    }
+    let skipped = counts
+        .iter()
+        .map(|(reason, n)| format!("{} {n}", reason.label()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!(
+        "ranked {} candidates for alias `{}` ({}) from {} as provider `{}`{}",
+        export.candidates.len(),
+        args.alias,
+        args.profile.catalog().as_str(),
+        args.gateway,
+        provider_key(&name),
+        if skipped.is_empty() {
+            String::new()
+        } else {
+            format!(" (skipped: {skipped})")
+        }
+    );
+    if observations.is_some() {
+        let with_quota = export
+            .candidates
+            .iter()
+            .filter(|c| c.quota.is_some())
+            .count();
+        eprintln!(
+            "quota: {with_quota} of {} candidates matched a freellmapi observation",
+            export.candidates.len()
+        );
+    } else {
+        eprintln!("note: no --freellmapi-observations: every quota is null");
+    }
+    if export.candidates.is_empty() {
+        eprintln!("warning: no candidates: every row of the gateway was left out");
     }
     Ok(())
 }
