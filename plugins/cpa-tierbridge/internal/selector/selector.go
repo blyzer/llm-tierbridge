@@ -21,16 +21,20 @@ const (
 	SkipProvider SkipReason = "provider" // the provider has no credentials registered in the host
 	SkipRPM      SkipReason = "rpm"      // the per-minute request quota is used up
 	SkipRPD      SkipReason = "rpd"      // the per-day request quota is used up
-	SkipBudget   SkipReason = "budget"   // the daily budget is spent
+	SkipTPM      SkipReason = "tpm"      // the request does not fit the per-minute token quota
+	SkipTPD      SkipReason = "tpd"      // the request does not fit the per-day token quota
+	SkipBudget   SkipReason = "budget"   // the request would exceed the daily budget
+	SkipCooldown SkipReason = "cooldown" // the candidate failed upstream recently and is cooling down
 )
 
 // Limiter decides whether a candidate may take one more request right now.
 //
 // Reserve is called only for candidates that already fit the request statically, in rank order, and
 // it must be atomic: when it returns true it has consumed one request from the candidate's quota, so
-// the caller stops at the first true. A false result must leave every counter untouched.
+// the caller stops at the first true. A false result must leave every counter untouched. req carries
+// the estimated prompt size, which token quotas and the budget are checked against.
 type Limiter interface {
-	Reserve(c routerfile.Candidate, now time.Time) (ok bool, why SkipReason)
+	Reserve(c routerfile.Candidate, req estimate.Request, now time.Time) (ok bool, why SkipReason)
 }
 
 // Skip records why one candidate was passed over.
@@ -82,7 +86,7 @@ func Select(req estimate.Request, cands []routerfile.Candidate, available []stri
 			skip(i, c, SkipProvider)
 		default:
 			if lim != nil {
-				if ok, why := lim.Reserve(c, now); !ok {
+				if ok, why := lim.Reserve(c, req, now); !ok {
 					skip(i, c, why)
 					continue
 				}

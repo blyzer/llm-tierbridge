@@ -158,12 +158,38 @@ func TestReasonTruncatesLongSkipList(t *testing.T) {
 	}
 }
 
+// fakeLimiter allows each candidate RPM requests per sliding minute (0 = unlimited).
+type fakeLimiter struct {
+	seen map[string][]time.Time
+}
+
+func (f *fakeLimiter) Reserve(c routerfile.Candidate, _ estimate.Request, now time.Time) (bool, SkipReason) {
+	if c.RPM == 0 {
+		return true, ""
+	}
+	if f.seen == nil {
+		f.seen = map[string][]time.Time{}
+	}
+	var keep []time.Time
+	for _, t := range f.seen[c.Key()] {
+		if t.After(now.Add(-time.Minute)) {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= c.RPM {
+		f.seen[c.Key()] = keep
+		return false, SkipRPM
+	}
+	f.seen[c.Key()] = append(keep, now)
+	return true, ""
+}
+
 func TestSelectWithLimiter(t *testing.T) {
 	ranking := []routerfile.Candidate{
 		{Provider: "a", Model: "one", RPM: 1},
 		{Provider: "b", Model: "two"},
 	}
-	lim := NewMemoryLimiter(0)
+	lim := &fakeLimiter{}
 
 	first := Select(estimate.Request{}, ranking, nil, lim, t0)
 	if first.Rank != 1 {
@@ -186,115 +212,12 @@ func TestSelectLimiterNotConsultedForStaticSkips(t *testing.T) {
 		{Provider: "a", Model: "one", ContextWindow: 10, RPM: 1},
 		{Provider: "b", Model: "two"},
 	}
-	lim := NewMemoryLimiter(0)
+	lim := &fakeLimiter{}
 	if got := Select(estimate.Request{Tokens: 50}, ranking, nil, lim, t0); got.Rank != 2 {
 		t.Fatalf("rank %d, want 2", got.Rank)
 	}
 	if got := Select(estimate.Request{Tokens: 5}, ranking, nil, lim, t0); got.Rank != 1 {
 		t.Errorf("rank %d, want 1: a context skip must not consume the rpm slot", got.Rank)
-	}
-}
-
-func TestMemoryLimiter(t *testing.T) {
-	t.Run("rpm sliding window", func(t *testing.T) {
-		l := NewMemoryLimiter(0)
-		c := routerfile.Candidate{Provider: "a", Model: "m", RPM: 2}
-		for i, at := range []time.Duration{0, 10 * time.Second} {
-			if ok, why := l.Reserve(c, t0.Add(at)); !ok {
-				t.Fatalf("request %d refused: %s", i+1, why)
-			}
-		}
-		if ok, why := l.Reserve(c, t0.Add(30*time.Second)); ok || why != SkipRPM {
-			t.Errorf("third request in the minute = %v, %q; want refused with rpm", ok, why)
-		}
-		// 61s: the first request left the window, the second is still in it.
-		if ok, why := l.Reserve(c, t0.Add(61*time.Second)); !ok {
-			t.Errorf("request after the first left the window refused: %s", why)
-		}
-		if ok, _ := l.Reserve(c, t0.Add(62*time.Second)); ok {
-			t.Errorf("window should be full again")
-		}
-	})
-	t.Run("rpd counts per UTC day", func(t *testing.T) {
-		l := NewMemoryLimiter(0)
-		c := routerfile.Candidate{Provider: "a", Model: "m", RPD: 2}
-		l.Reserve(c, t0)
-		l.Reserve(c, t0.Add(time.Hour))
-		if ok, why := l.Reserve(c, t0.Add(2*time.Hour)); ok || why != SkipRPD {
-			t.Errorf("third request of the day = %v, %q; want refused with rpd", ok, why)
-		}
-		nextDay := time.Date(2026, 11, 28, 0, 0, 1, 0, time.UTC)
-		if ok, why := l.Reserve(c, nextDay); !ok {
-			t.Errorf("first request of the next UTC day refused: %s", why)
-		}
-	})
-	t.Run("a refused reservation consumes nothing", func(t *testing.T) {
-		l := NewMemoryLimiter(0)
-		c := routerfile.Candidate{Provider: "a", Model: "m", RPM: 5, RPD: 1}
-		l.Reserve(c, t0)
-		for range 3 {
-			if ok, why := l.Reserve(c, t0.Add(time.Second)); ok || why != SkipRPD {
-				t.Fatalf("Reserve = %v, %q; want rpd refusal", ok, why)
-			}
-		}
-		if n := len(l.counters["a/m"].recent); n != 1 {
-			t.Errorf("rpm window holds %d entries, want 1 (refusals must not count)", n)
-		}
-	})
-	t.Run("candidates are independent and unlimited ones are free", func(t *testing.T) {
-		l := NewMemoryLimiter(0)
-		a := routerfile.Candidate{Provider: "a", Model: "m", RPM: 1}
-		b := routerfile.Candidate{Provider: "b", Model: "m", RPM: 1}
-		free := routerfile.Candidate{Provider: "c", Model: "m"}
-		l.Reserve(a, t0)
-		if ok, _ := l.Reserve(b, t0); !ok {
-			t.Errorf("b was refused because of a")
-		}
-		for range 100 {
-			if ok, _ := l.Reserve(free, t0); !ok {
-				t.Fatalf("unlimited candidate refused")
-			}
-		}
-		if len(l.counters) != 2 {
-			t.Errorf("unlimited candidates must not allocate counters, have %d", len(l.counters))
-		}
-	})
-	t.Run("daily budget", func(t *testing.T) {
-		l := NewMemoryLimiter(1.5)
-		c := routerfile.Candidate{Provider: "a", Model: "m"}
-		if ok, _ := l.Reserve(c, t0); !ok {
-			t.Fatalf("refused under budget")
-		}
-		l.AddSpend(1.0, t0)
-		if ok, _ := l.Reserve(c, t0); !ok {
-			t.Fatalf("refused at 1.0 of 1.5")
-		}
-		l.AddSpend(0.5, t0)
-		if ok, why := l.Reserve(c, t0); ok || why != SkipBudget {
-			t.Errorf("at the budget = %v, %q; want refused with budget", ok, why)
-		}
-		if got := l.Spent(t0); got != 1.5 {
-			t.Errorf("Spent() = %v, want 1.5", got)
-		}
-		// The budget resets at the next UTC day and 0 disables it.
-		nextDay := time.Date(2026, 11, 28, 0, 0, 1, 0, time.UTC)
-		if ok, why := l.Reserve(c, nextDay); !ok {
-			t.Errorf("refused on a fresh day: %s", why)
-		}
-		l.AddSpend(100, nextDay)
-		l.SetDailyBudget(0)
-		if ok, why := l.Reserve(c, nextDay); !ok {
-			t.Errorf("budget 0 must mean no budget, refused: %s", why)
-		}
-	})
-}
-
-func TestSelectBudgetExceeded(t *testing.T) {
-	lim := NewMemoryLimiter(1)
-	lim.AddSpend(2, t0)
-	got := Select(estimate.Request{}, []routerfile.Candidate{{Provider: "a", Model: "one"}, {Provider: "b", Model: "two"}}, nil, lim, t0)
-	if got.Picked != nil || len(got.Skips) != 2 || got.Skips[0].Reason != SkipBudget {
-		t.Fatalf("Select() = %+v, want nothing picked with budget skips", got)
 	}
 }
 

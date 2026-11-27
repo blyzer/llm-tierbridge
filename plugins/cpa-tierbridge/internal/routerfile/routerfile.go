@@ -29,8 +29,8 @@
 // the exported alias) are required. "contextWindow" in tokens (null/0 = unknown, never a reason to
 // skip); "supportsTools" (null = false: skipped for requests that declare tools); "input" lists the
 // accepted modalities (null/absent = text only: "image" is required for requests with images);
-// "quota.rpm"/"quota.rpd" are request quotas per minute and per UTC day (null/0 = unlimited; tpm/tpd are
-// parsed for the token counters, "monthlyTokenBudget" is free text and ignored); "cost.status" is
+// "quota.rpm"/"quota.rpd" are request quotas per minute and per UTC day and "quota.tpm"/"quota.tpd" the
+// token quotas (null/0 = unlimited; "monthlyTokenBudget" is free text and ignored); "cost.status" is
 // free, known or unknown, and a candidate with unknown (or null) prices is "unpriced": budget math
 // counts it as 0 and the management status flags it.
 package routerfile
@@ -92,9 +92,11 @@ type Candidate struct {
 	Quota         *Quota   `json:"quota"`
 	Reasons       []string `json:"reasons,omitempty"`
 
-	// RPM and RPD are Quota.rpm and Quota.rpd flattened by Parse (0 = unlimited).
+	// RPM, RPD, TPM and TPD are Quota.rpm, rpd, tpm and tpd flattened by Parse (0 = unlimited).
 	RPM int `json:"-"`
 	RPD int `json:"-"`
+	TPM int `json:"-"`
+	TPD int `json:"-"`
 }
 
 // HasInput reports whether the candidate accepts the modality ("text", "image", ...).
@@ -215,6 +217,12 @@ func normaliseCandidates(a *AliasEntry) error {
 			}
 			if q.RPD != nil {
 				c.RPD = *q.RPD
+			}
+			if q.TPM != nil {
+				c.TPM = *q.TPM
+			}
+			if q.TPD != nil {
+				c.TPD = *q.TPD
 			}
 		}
 		input := make([]string, 0, len(c.Input))

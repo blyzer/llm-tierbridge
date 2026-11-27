@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/blyzer/llm-tierbridge/plugins/cpa-tierbridge/internal/accounting"
 	"github.com/blyzer/llm-tierbridge/plugins/cpa-tierbridge/internal/config"
 	"github.com/blyzer/llm-tierbridge/plugins/cpa-tierbridge/internal/estimate"
 	"github.com/blyzer/llm-tierbridge/plugins/cpa-tierbridge/internal/routerfile"
@@ -30,8 +31,13 @@ const (
 type Handler struct {
 	now func() time.Time
 
-	limiter   *selector.MemoryLimiter
+	acct      *accounting.Accountant
+	persist   *accounting.Persister
 	decisions *selector.Recorder
+	usageSeen *usageRing
+
+	// beforeManagement is a test hook run before a management route is served.
+	beforeManagement func(route string)
 
 	mu        sync.RWMutex
 	cfg       config.Config
@@ -44,13 +50,19 @@ type Handler struct {
 // NewHandler creates a handler with the default configuration (no router file: nothing is handled).
 func NewHandler() *Handler {
 	cfg := config.Default()
-	return &Handler{
+	h := &Handler{
 		now:       time.Now,
-		limiter:   selector.NewMemoryLimiter(cfg.DailyBudgetUSD),
+		acct:      accounting.New(),
 		decisions: selector.NewRecorder(cfg.DecisionsKeep),
+		usageSeen: &usageRing{},
 		cfg:       cfg,
 		store:     routerfile.NewStore(cfg.RouterFile),
 	}
+	// The clock is read through h.now on every call, so tests can swap it after construction.
+	h.persist = accounting.NewPersister(h.acct, func() time.Time { return h.now() })
+	h.acct.SetOnChange(h.persist.Notify)
+	h.acct.Configure(cfg.DailyBudgetUSD, time.Duration(cfg.CooldownSeconds)*time.Second)
+	return h
 }
 
 // Handle runs one RPC call and returns the response envelope. It never panics: a panic inside the
@@ -66,20 +78,22 @@ func (h *Handler) Handle(method string, request []byte) (out []byte) {
 	switch method {
 	case wire.MethodPluginRegister, wire.MethodPluginReconfigure:
 		return h.lifecycle(request)
-	case wire.MethodPluginQuiesce, wire.MethodPluginShutdown:
+	case wire.MethodPluginQuiesce:
+		return h.ok(struct{}{})
+	case wire.MethodPluginShutdown:
+		h.persist.Close()
 		return h.ok(struct{}{})
 	case wire.MethodModelRoute:
 		return h.ok(h.route(request))
 	case wire.MethodUsageHandle:
-		// The usage plugin capability is declared; accounting arrives with the quota counters.
-		return h.ok(struct{}{})
+		return h.usage(request)
 	case wire.MethodManagementRegister:
 		return h.ok(wire.ManagementRegistrationResponse{
-			Routes:    []wire.ManagementRoute{},
+			Routes:    ManagementRoutes(),
 			Resources: []wire.ResourceRoute{},
 		})
 	case wire.MethodManagementHandle:
-		return h.ok(notFound())
+		return h.ok(h.manage(request))
 	default:
 		return wire.ErrorEnvelope(wire.ErrorCodeUnknownMethod, "unknown method: "+method)
 	}
@@ -92,14 +106,6 @@ func (h *Handler) ok(result any) []byte {
 		return wire.ErrorEnvelope(wire.ErrorCodeInternal, "encode response")
 	}
 	return raw
-}
-
-func notFound() wire.ManagementResponse {
-	return wire.ManagementResponse{
-		StatusCode: 404,
-		Headers:    map[string][]string{"Content-Type": {"application/json"}},
-		Body:       []byte(`{"error":"not found"}`),
-	}
 }
 
 // lifecycle serves plugin.register and plugin.reconfigure: apply config_yaml, then publish the
@@ -128,7 +134,8 @@ func (h *Handler) applyConfig(raw []byte) {
 	if cfg.RouterFile != h.cfg.RouterFile {
 		h.store = routerfile.NewStore(cfg.RouterFile)
 	}
-	h.limiter.SetDailyBudget(cfg.DailyBudgetUSD)
+	h.acct.Configure(cfg.DailyBudgetUSD, time.Duration(cfg.CooldownSeconds)*time.Second)
+	h.persist.SetPath(cfg.StatePath)
 	h.decisions.SetKeep(cfg.DecisionsKeep)
 	h.cfg = cfg
 }
@@ -173,7 +180,7 @@ func ConfigFields() []wire.ConfigField {
 		{Name: "cooldown-seconds", Type: wire.ConfigFieldInteger, Default: config.DefaultCooldownSeconds,
 			Description: "Seconds a candidate is skipped after an upstream failure reported by the usage plugin."},
 		{Name: "state-path", Type: wire.ConfigFieldString, Default: "",
-			Description: "File the quota counters and decisions persist to across restarts. Empty means no persistence."},
+			Description: "File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written at most every 5 s). Empty means no persistence."},
 		{Name: "decisions-keep", Type: wire.ConfigFieldInteger, Default: config.DefaultDecisionsKeep,
 			Description: "How many recent routing decisions the management status keeps."},
 		{Name: "debug-force-error", Type: wire.ConfigFieldBoolean, Default: false,
@@ -189,6 +196,9 @@ type Status struct {
 	LastError   string              `json:"lastError,omitempty"`
 	LastErrorAt time.Time           `json:"lastErrorAt,omitzero"`
 	Decisions   []selector.Decision `json:"decisions"`
+	// LastUsageModels are the latest usage records seen, newest first.
+	LastUsageModels []UsageSeen              `json:"lastUsageModels"`
+	Persistence     accounting.PersistStatus `json:"persistence"`
 }
 
 // Status returns a snapshot of the plugin state. Router.Error and ConfigError hold the errors kept
@@ -203,6 +213,8 @@ func (h *Handler) Status() Status {
 	h.mu.RUnlock()
 	st.Router = store.Status()
 	st.Decisions = h.decisions.Recent()
+	st.LastUsageModels = h.usageSeen.recent()
+	st.Persistence = h.persist.Status()
 	return st
 }
 
@@ -257,7 +269,7 @@ func (h *Handler) route(request []byte) (resp wire.ModelRouteResponse) {
 	}
 
 	now := h.now()
-	out := selector.Select(est, entry.Candidates, req.AvailableProviders, h.limiter, now)
+	out := selector.Select(est, entry.Candidates, req.AvailableProviders, h.acct, now)
 	reason := out.Reason()
 	h.record(requested, est, out, reason)
 	if out.Picked == nil {

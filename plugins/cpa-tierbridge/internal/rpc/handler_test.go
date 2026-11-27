@@ -115,6 +115,7 @@ func newPlugin(t *testing.T, router, extraYAML string) (*Handler, string) {
 	}
 	h := NewHandler()
 	h.now = func() time.Time { return clock }
+	t.Cleanup(h.persist.Close) // before the temp dir goes: a late write must not recreate it
 	yaml := fmt.Sprintf("enabled: true\npriority: 0\nrouter-file: %q\n%s", path, extraYAML)
 	if env := decode(t, h.Handle(wire.MethodPluginRegister, lifecycle(t, yaml)), nil); !env.OK {
 		t.Fatalf("register failed: %+v", env.Error)
@@ -223,10 +224,12 @@ func TestRouteRPMOneSkipsTheCandidateOnTheSecondRequest(t *testing.T) {
 }
 
 func TestRouteDailyBudgetExceeded(t *testing.T) {
-	h, _ := newPlugin(t, rankingJSON, "daily-budget-usd: 1\n")
-	h.limiter.AddSpend(1, clock)
+	priced := wrap(`{"provider":"paid","model":"p","cost":{"status":"known","input":1,"output":2}}`)
+	h, _ := newPlugin(t, priced, "daily-budget-usd: 1\n")
+	// 1M input tokens at $1/M and 1M output tokens at $2/M: $3 spent, over the $1 budget.
+	h.Handle(wire.MethodUsageHandle, []byte(`{"Model":"p","Detail":{"InputTokens":1000000,"OutputTokens":1000000}}`))
 	got := route(t, h, aliasModel, chatBody(40, ""), nil)
-	if got.Handled || !strings.HasPrefix(got.Reason, "no candidate fits (small/s budget") {
+	if got.Handled || !strings.HasPrefix(got.Reason, "no candidate fits (paid/p budget") {
 		t.Errorf("response = %+v, want Handled:false with budget skips", got)
 	}
 }
@@ -396,8 +399,10 @@ func TestOtherMethods(t *testing.T) {
 			t.Errorf("%s = %s, want an empty success", method, got)
 		}
 	}
-	if got := string(h.Handle(wire.MethodManagementRegister, nil)); got != `{"ok":true,"result":{"routes":[],"resources":[]}}` {
-		t.Errorf("management.register = %s", got)
+	var reg wire.ManagementRegistrationResponse
+	decode(t, h.Handle(wire.MethodManagementRegister, nil), &reg)
+	if len(reg.Routes) != 5 || len(reg.Resources) != 0 {
+		t.Errorf("management.register = %+v", reg)
 	}
 	var resp wire.ManagementResponse
 	if env := decode(t, h.Handle(wire.MethodManagementHandle, nil), &resp); !env.OK || resp.StatusCode != 404 {
@@ -415,7 +420,7 @@ func TestOtherMethods(t *testing.T) {
 
 func TestHandlePanicBecomesAnErrorEnvelope(t *testing.T) {
 	h := NewHandler()
-	h.limiter = nil // makes applyConfig dereference nil
+	h.acct = nil // makes applyConfig dereference nil
 	env := decode(t, h.Handle(wire.MethodPluginRegister, lifecycle(t, "alias: x\n")), nil)
 	if env.OK || env.Error == nil || env.Error.Code != wire.ErrorCodeInternal {
 		t.Fatalf("envelope = %+v, want an internal_error", env)
@@ -433,7 +438,7 @@ func TestGoldenRegister(t *testing.T) {
 		`{"Name":"alias","Type":"string","Default":"tierbridge/auto","EnumValues":null,"Description":"Model name the plugin answers to. Every other model is left to the host."},` +
 		`{"Name":"daily-budget-usd","Type":"number","Default":0,"EnumValues":null,"Description":"Estimated spend allowed per UTC day, in USD. 0 means no budget."},` +
 		`{"Name":"cooldown-seconds","Type":"integer","Default":60,"EnumValues":null,"Description":"Seconds a candidate is skipped after an upstream failure reported by the usage plugin."},` +
-		`{"Name":"state-path","Type":"string","Default":"","EnumValues":null,"Description":"File the quota counters and decisions persist to across restarts. Empty means no persistence."},` +
+		`{"Name":"state-path","Type":"string","Default":"","EnumValues":null,"Description":"File the quota counters, spend and cooldowns persist to across restarts (atomic JSON, mode 0600, written at most every 5 s). Empty means no persistence."},` +
 		`{"Name":"decisions-keep","Type":"integer","Default":50,"EnumValues":null,"Description":"How many recent routing decisions the management status keeps."},` +
 		`{"Name":"debug-force-error","Type":"boolean","Default":false,"EnumValues":null,"Description":"TEST SWITCH ONLY: makes model routing fail internally so an acceptance run can prove the host falls through."}` +
 		`]},"capabilities":{"model_router":true,"usage_plugin":true,"management_api":true}}}`
